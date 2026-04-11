@@ -1,6 +1,32 @@
-// Lyric graph — orbital layout around central particle form
-// Active lyric = glowing node + targeting circles near center
-// Other lyrics = drift outward, connected by lines
+// Lyric word network — full song vocabulary as persistent node map
+// Active line words light up; edges connect co-occurring words
+
+const STOP = new Set([
+  'a','an','the','and','or','but','in','on','at','to','for','of','with',
+  'i','you','me','my','your','it','its','is','are','was','were','be','been',
+  'being','have','has','had','do','does','did','will','would','could','should',
+  'may','might','shall','can','not','no','so','if','as','up','out','by',
+  'from','that','this','these','those','he','she','we','they','him','her',
+  'us','them','all','just','like','get','got','go','gonna','wanna','im',
+  "i'm","i've","i'll","i'd","you're","don't","can't","won't","it's","that's",
+])
+
+function wordKey(raw) {
+  const k = raw.replace(/[^a-zA-Z']/g, '').toLowerCase()
+  return k.length < 2 ? '' : k
+}
+
+function stablePos(word, w, h, pad) {
+  let h1 = 0, h2 = 0
+  for (let i = 0; i < word.length; i++) {
+    h1 = (h1 * 31  + word.charCodeAt(i)) & 0xfffff
+    h2 = (h2 * 127 + word.charCodeAt(i)) & 0xfffff
+  }
+  return [
+    pad + (h1 % 10000) / 10000 * (w - pad * 2),
+    pad + (h2 % 10000) / 10000 * (h - pad * 2),
+  ]
+}
 
 export class LyricGraph {
   constructor(container) {
@@ -10,23 +36,16 @@ export class LyricGraph {
     this.ctx = this.canvas.getContext('2d')
 
     this.time       = 0
-    this.color      = [255, 120, 80]
-    this.redColor   = [255, 55, 55]
-
+    this.color      = [180, 255, 120]
     this._lines     = []
     this._activeIdx = -1
-    this._nodes     = []
+    this._wordNodes = []   // {word, x, y, count, lineSet, brightness}
+    this._edges     = []   // {a, b} indices into _wordNodes
+    this._activeSet = new Set()
     this._trackCode = 'SECTOR-00-0000'
 
-    // 3 targeting rings on active node
-    this._rings = [
-      { r: 55,  rot: 0,  rotSpeed:  0.35, alpha: 0.65 },
-      { r: 85,  rot: 0,  rotSpeed: -0.22, alpha: 0.45 },
-      { r: 115, rot: 0,  rotSpeed:  0.15, alpha: 0.28 },
-    ]
-
     this._resize()
-    window.addEventListener('resize', () => { this._resize(); this._buildLayout() })
+    window.addEventListener('resize', () => { this._resize(); this._rebuildPositions() })
   }
 
   _resize() {
@@ -37,13 +56,116 @@ export class LyricGraph {
   setLines(lines) {
     this._lines = lines ?? []
     this._activeIdx = -1
-    this._nodes = []
+    this._activeSet = new Set()
+    this._buildWordGraph()
+  }
+
+  _buildWordGraph() {
+    const w = this.canvas.width, h = this.canvas.height
+    const pad = 70
+
+    // Collect unique meaningful words + their line memberships
+    const wordData = new Map() // key → {display, count, lineSet}
+
+    this._lines.forEach((line, li) => {
+      const tokens = line.words.split(/\s+/).filter(Boolean)
+      let i = 0
+      while (i < tokens.length) {
+        const key = wordKey(tokens[i])
+        // Merge article/preposition with next word
+        if (STOP.has(key) && i + 1 < tokens.length) {
+          const nextKey = wordKey(tokens[i + 1])
+          if (!STOP.has(nextKey)) {
+            const mergedKey   = key + '_' + nextKey
+            const mergedDisplay = (tokens[i] + ' ' + tokens[i + 1]).toUpperCase()
+            if (!wordData.has(mergedKey)) wordData.set(mergedKey, { display: mergedDisplay, count: 0, lineSet: new Set() })
+            const e = wordData.get(mergedKey)
+            e.count++; e.lineSet.add(li)
+            i += 2; continue
+          }
+        }
+        if (!STOP.has(key) && key.length > 1) {
+          if (!wordData.has(key)) wordData.set(key, { display: tokens[i].toUpperCase(), count: 0, lineSet: new Set() })
+          const e = wordData.get(key)
+          e.count++; e.lineSet.add(li)
+        }
+        i++
+      }
+    })
+
+    // Build node list with stable positions
+    this._wordNodes = []
+    const nodeIdx = new Map()
+    for (const [key, data] of wordData) {
+      const [x, y] = stablePos(key, w, h, pad)
+      nodeIdx.set(key, this._wordNodes.length)
+      this._wordNodes.push({
+        key, display: data.display,
+        x, y,
+        count: data.count,
+        lineSet: data.lineSet,
+        brightness: 0,   // 0=dim, 1=active (lerped)
+      })
+    }
+
+    // Build edges: consecutive non-stop words in same line
+    const edgeSet = new Set()
+    this._edges = []
+    this._lines.forEach((line, li) => {
+      const tokens = line.words.split(/\s+/).filter(Boolean)
+      const keys = []
+      let i = 0
+      while (i < tokens.length) {
+        const k = wordKey(tokens[i])
+        if (STOP.has(k) && i + 1 < tokens.length) {
+          const nk = wordKey(tokens[i+1])
+          if (!STOP.has(nk)) { keys.push(k + '_' + nk); i += 2; continue }
+        }
+        if (!STOP.has(k) && k.length > 1) keys.push(k)
+        i++
+      }
+      for (let j = 0; j < keys.length - 1; j++) {
+        const a = nodeIdx.get(keys[j])
+        const b = nodeIdx.get(keys[j+1])
+        if (a === undefined || b === undefined || a === b) continue
+        const eKey = a < b ? `${a}-${b}` : `${b}-${a}`
+        if (!edgeSet.has(eKey)) {
+          edgeSet.add(eKey)
+          this._edges.push({ a, b })
+        }
+      }
+    })
+  }
+
+  _rebuildPositions() {
+    const w = this.canvas.width, h = this.canvas.height
+    const pad = 70
+    for (const node of this._wordNodes) {
+      const [x, y] = stablePos(node.key, w, h, pad)
+      node.x = x; node.y = y
+    }
   }
 
   setActiveIndex(idx) {
     if (idx === this._activeIdx) return
     this._activeIdx = idx
-    this._buildLayout()
+
+    // Find which word keys belong to this line
+    const newActive = new Set()
+    if (idx >= 0 && this._lines[idx]) {
+      const tokens = this._lines[idx].words.split(/\s+/).filter(Boolean)
+      let i = 0
+      while (i < tokens.length) {
+        const k = wordKey(tokens[i])
+        if (STOP.has(k) && i + 1 < tokens.length) {
+          const nk = wordKey(tokens[i+1])
+          if (!STOP.has(nk)) { newActive.add(k + '_' + nk); i += 2; continue }
+        }
+        if (!STOP.has(k) && k.length > 1) newActive.add(k)
+        i++
+      }
+    }
+    this._activeSet = newActive
   }
 
   setColor(r, g, b) { this.color = [r, g, b] }
@@ -54,179 +176,149 @@ export class LyricGraph {
     this._trackCode = `${String(Math.floor(h/1000)%100).padStart(2,'0')}-SECTOR-${String(h%10000).padStart(4,'0')}`
   }
 
-  _buildLayout() {
-    const w = this.canvas.width, h = this.canvas.height
-    const cx = w * 0.5, cy = h * 0.5
-    const idx = this._activeIdx
-    if (!this._lines.length || idx < 0) return
-
-    const PHI = 1.6180339887  // golden angle spread
-
-    // Window: 4 past + active + 7 future
-    const visible = []
-    for (let i = idx - 4; i <= idx + 7; i++) {
-      if (i >= 0 && i < this._lines.length) visible.push(i)
-    }
-
-    this._nodes = visible.map((li) => {
-      const rel      = li - idx
-      const isActive = rel === 0
-
-      // Orbital position — each line has a stable angle derived from its index
-      const angle   = li * PHI * 2.0             // stable angle per line
-      const dist    = isActive ? 145
-        : rel < 0
-          ? 145 + Math.abs(rel) * 70 + Math.sin(li) * 25   // past → drift outward
-          : 180 + rel * 55 + Math.cos(li * 1.3) * 20       // future → further ring
-      const drift   = isActive ? 0 : Math.sin(this.time * 0.3 + li * 0.7) * 12
-
-      const x = cx + Math.cos(angle) * (dist + drift)
-      const y = cy + Math.sin(angle) * (dist + drift) * 0.75  // slightly squashed
-
-      const size  = isActive ? 7 : Math.max(2.5, 6 - Math.abs(rel) * 0.7)
-      const alpha = isActive ? 1.0
-        : rel < 0
-          ? Math.max(0.06, 0.65 - Math.abs(rel) * 0.12)
-          : Math.max(0.04, 0.38 - rel * 0.06)
-
-      return { li, x, y, size, alpha, isActive, rel, words: this._lines[li]?.words ?? '', angle, dist }
-    })
-  }
-
   update(audio, delta) {
     this.time += delta
     const { ctx } = this
     const w = this.canvas.width, h = this.canvas.height
-    const cx = w * 0.5, cy = h * 0.5
+    const cx = w * 0.5
     const overall = audio.overall ?? 0
-    const beat    = audio.beat    ?? false
-    const kick    = audio.kick    ?? 0
+    const beat    = audio.beat ?? false
+    const kick    = audio.kick ?? 0
     const [cr, cg, cb] = this.color
-    const [rr, rg, rb] = this.redColor
 
     ctx.clearRect(0, 0, w, h)
 
-    // Drift nodes slowly over time
-    const PHI = 1.6180339887
-    if (this._activeIdx >= 0) {
-      this._nodes.forEach(node => {
-        if (node.isActive) return
-        const drift = Math.sin(this.time * 0.3 + node.li * 0.7) * 12
-        node.x = cx + Math.cos(node.angle) * (node.dist + drift)
-        node.y = cy + Math.sin(node.angle) * (node.dist + drift) * 0.75
-      })
+    if (!this._wordNodes.length) return
+
+    // Lerp brightness toward target
+    const lerpSpeed = delta * 3.5
+    for (const node of this._wordNodes) {
+      const target = this._activeSet.has(node.key) ? 1.0 : 0.0
+      node.brightness += (target - node.brightness) * lerpSpeed
     }
 
-    const activeNode = this._nodes.find(n => n.isActive)
+    // ── Edges: word-to-word chain ──────────────────────────────────────
+    const wordNodes = this._wordNodes.filter(n => n.brightness > 0.05)
+    for (let i = 0; i < wordNodes.length - 1; i++) {
+      const edgeA = 0.35 + overall * 0.2
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${edgeA})`
+      ctx.lineWidth = 0.8
+      ctx.beginPath()
+      ctx.moveTo(wordNodes[i].x, wordNodes[i].y)
+      ctx.lineTo(wordNodes[i+1].x, wordNodes[i+1].y)
+      ctx.stroke()
 
-    // ── Lines: active → each other node ──────────────────────────────
-    if (activeNode) {
-      for (const node of this._nodes) {
-        if (node.isActive) continue
-        const a = node.alpha * (0.25 + overall * 0.15)
-        ctx.strokeStyle = `rgba(${cr},${cg},${cb},${a})`
-        ctx.lineWidth   = 0.5
-        ctx.beginPath()
-        ctx.moveTo(activeNode.x, activeNode.y)
-        ctx.lineTo(node.x, node.y)
-        ctx.stroke()
-      }
+      // Arrow head pointing to next word
+      const angle = Math.atan2(wordNodes[i+1].y - wordNodes[i].y, wordNodes[i+1].x - wordNodes[i].x)
+      const al = 7
+      ctx.beginPath()
+      ctx.moveTo(wordNodes[i+1].x, wordNodes[i+1].y)
+      ctx.lineTo(wordNodes[i+1].x - al * Math.cos(angle - 0.4), wordNodes[i+1].y - al * Math.sin(angle - 0.4))
+      ctx.moveTo(wordNodes[i+1].x, wordNodes[i+1].y)
+      ctx.lineTo(wordNodes[i+1].x - al * Math.cos(angle + 0.4), wordNodes[i+1].y - al * Math.sin(angle + 0.4))
+      ctx.stroke()
     }
 
-    // ── Targeting rings on active node ───────────────────────────────
-    if (activeNode) {
-      const pulse = 1.0 + kick * 0.2 + overall * 0.1
-      for (const ring of this._rings) {
-        ring.rot += delta * ring.rotSpeed
-        const r = ring.r * pulse
-        const a = ring.alpha * (0.5 + overall * 0.3)
-        ctx.strokeStyle = `rgba(${rr},${rg},${rb},${a})`
-        ctx.lineWidth   = 0.8
-        ctx.beginPath()
-        ctx.arc(activeNode.x, activeNode.y, r, 0, Math.PI * 2)
-        ctx.stroke()
-
-        // Notch marks
-        for (let ni = 0; ni < 4; ni++) {
-          const na = ring.rot + (ni / 4) * Math.PI * 2
-          ctx.beginPath()
-          ctx.moveTo(activeNode.x + Math.cos(na) * (r - 5), activeNode.y + Math.sin(na) * (r - 5))
-          ctx.lineTo(activeNode.x + Math.cos(na) * (r + 7), activeNode.y + Math.sin(na) * (r + 7))
-          ctx.stroke()
-        }
-
-        // Orbiting dot on outermost ring
-        if (ring.r === 115) {
-          ctx.beginPath()
-          ctx.arc(activeNode.x + Math.cos(ring.rot) * r,
-                  activeNode.y + Math.sin(ring.rot) * r, 2.5, 0, Math.PI * 2)
-          ctx.fillStyle = `rgba(${rr},${rg},${rb},${a * 0.9})`
-          ctx.fill()
-        }
-      }
+    // Dim background edges for all non-active connections
+    for (const { a, b } of this._edges) {
+      const na = this._wordNodes[a], nb = this._wordNodes[b]
+      const bright = Math.max(na.brightness, nb.brightness)
+      if (bright >= 0.05) continue
+      const baseA = 0.04 + bright * 0.35 + overall * bright * 0.1
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${baseA})`
+      ctx.lineWidth = 0.5 + bright * 0.8
+      ctx.beginPath()
+      ctx.moveTo(na.x, na.y)
+      ctx.lineTo(nb.x, nb.y)
+      ctx.stroke()
     }
 
-    // ── Nodes + text ──────────────────────────────────────────────────
-    for (const node of this._nodes) {
-      const beatPulse = node.isActive ? (1 + kick * 0.5 + overall * 0.2) : 1
-      const r = node.size * beatPulse
+    // ── Nodes ──────────────────────────────────────────────────────────
+    const maxCount = Math.max(1, ...this._wordNodes.map(n => n.count))
 
-      // Glow halo on active
-      if (node.isActive) {
-        const grd = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 7)
-        grd.addColorStop(0, `rgba(${cr},${cg},${cb},${0.22 + overall * 0.12})`)
+    // Draw inactive nodes first (dim pass)
+    ctx.shadowBlur = 4
+    for (const node of this._wordNodes) {
+      const bright = node.brightness
+      if (bright > 0.05) continue  // active nodes drawn separately below
+      const freq   = node.count / maxCount
+
+      const dimA   = 0.04 + freq * 0.12
+      const alpha  = dimA
+
+      if (alpha < 0.015) continue
+
+      const dotR = 1.5 + freq * 2
+      ctx.shadowColor = `rgba(${cr},${cg},${cb},0.3)`
+      ctx.beginPath()
+      ctx.arc(node.x, node.y, dotR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha})`
+      ctx.fill()
+
+      const fz = Math.round(8 + freq * 8)
+      ctx.font = `300 ${fz}px "SF Mono", "Courier New", monospace`
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha * 0.95})`
+      ctx.textAlign = 'left'
+      ctx.fillText(node.display, node.x + dotR + 4, node.y + fz * 0.36)
+    }
+
+    // Draw active nodes with glow
+    ctx.shadowColor = `rgba(${cr},${cg},${cb},0.9)`
+    ctx.shadowBlur = 14
+    for (const node of this._wordNodes) {
+      const bright = node.brightness
+      if (bright <= 0.05) continue
+      const freq   = node.count / maxCount
+
+      const dimA   = 0.04 + freq * 0.12
+      const activeA = 0.85 + overall * 0.15
+      const alpha  = dimA + (activeA - dimA) * bright
+
+      if (alpha < 0.015) continue
+
+      // Glow halo for active nodes
+      if (bright > 0.3) {
+        const glowR = 20 + freq * 20 + kick * bright * 10
+        const grd = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, glowR)
+        grd.addColorStop(0, `rgba(${cr},${cg},${cb},${bright * (0.2 + overall * 0.1)})`)
         grd.addColorStop(1, `rgba(${cr},${cg},${cb},0)`)
         ctx.fillStyle = grd
         ctx.beginPath()
-        ctx.arc(node.x, node.y, r * 7, 0, Math.PI * 2)
+        ctx.arc(node.x, node.y, glowR, 0, Math.PI * 2)
         ctx.fill()
       }
 
-      // Node dot
+      // Dot
+      const dotR = 1.5 + freq * 2 + bright * (3 + kick * 2)
       ctx.beginPath()
-      ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${cr},${cg},${cb},${node.alpha})`
+      ctx.arc(node.x, node.y, dotR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha})`
       ctx.fill()
 
-      // Text label — on opposite side from center
-      const toCenter = Math.atan2(cy - node.y, cx - node.x)
-      const labelAngle = toCenter + Math.PI  // away from center
-      const labelDist  = r + 10
-      const lx = node.x + Math.cos(labelAngle) * labelDist
-      const ly = node.y + Math.sin(labelAngle) * labelDist
-
-      const fontSize   = node.isActive ? 12 : Math.max(8, 11 - Math.abs(node.rel))
-      const textAlpha  = node.isActive ? (0.88 + overall * 0.12) : node.alpha * 0.85
-      ctx.font         = `${node.isActive ? '400' : '300'} ${fontSize}px "Helvetica Neue", Helvetica, sans-serif`
-      ctx.fillStyle    = `rgba(${cr},${cg},${cb},${textAlpha})`
-      ctx.textAlign    = lx < cx ? 'right' : 'left'
-      ctx.fillText(node.words, lx, ly + 4)
+      // Text — size scales with frequency + activation
+      const fz = Math.min(28, Math.max(16, w / 46))
+      const weight = bright > 0.5 ? '500' : '300'
+      ctx.font = `${weight} ${fz}px "SF Mono", "Courier New", monospace`
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha * 0.95})`
+      ctx.textAlign = 'left'
+      ctx.fillText(node.display, node.x + dotR + 4, node.y + fz * 0.36)
     }
+    ctx.shadowBlur = 0
 
-    // ── Grain ─────────────────────────────────────────────────────────
-    const img = ctx.createImageData(w, h)
-    const d = img.data
-    for (let i = 0; i < d.length; i += 16) {  // sparse for perf
-      const v = (Math.random() * 28 - 14) * (0.4 + overall * 0.5)
-      d[i] = d[i+1] = d[i+2] = 128 + v; d[i+3] = 16
-    }
-    ctx.putImageData(img, 0, 0)
-
-    // ── Corner brackets ───────────────────────────────────────────────
-    const pad = 18, bl = 14, ba = 0.18 + overall * 0.08
-    ctx.strokeStyle = `rgba(${rr},${rg},${rb},${ba})`
+    // ── Corner brackets ────────────────────────────────────────────────
+    const pad = 18, bl = 14, ba = 0.12 + overall * 0.06
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},${ba})`
     ctx.lineWidth = 1
     for (const [x,y,sx,sy] of [[pad,pad,1,1],[w-pad,pad,-1,1],[pad,h-pad,1,-1],[w-pad,h-pad,-1,-1]]) {
       ctx.beginPath(); ctx.moveTo(x+sx*bl,y); ctx.lineTo(x,y); ctx.lineTo(x,y+sy*bl); ctx.stroke()
     }
 
-    // ── HUD ───────────────────────────────────────────────────────────
+    // ── HUD ────────────────────────────────────────────────────────────
     const frame = String(Math.floor(this.time * 30)).padStart(6, '0')
-    ctx.font      = '9px "SF Mono", "Courier New", monospace'
-    ctx.fillStyle = `rgba(${rr},${rg},${rb},${0.28 + overall * 0.12})`
+    ctx.font      = '9px "SF Mono","Courier New",monospace'
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.22 + overall * 0.1})`
     ctx.textAlign = 'center'
     ctx.fillText(`${this._trackCode}  ·  F:${frame}`, cx, h - 22)
-    ctx.textAlign = 'left'
   }
 
   destroy() { this.canvas.remove() }

@@ -204,7 +204,7 @@ export function startPolling(onUpdate) {
 export function initPlayer(onReady, onStateChange, onError) {
   return new Promise((resolve) => {
     const ready = () => {
-      getToken().then(token => {
+      getToken().then(() => {
         const player = new window.Spotify.Player({
           name: 'Notyet Visualizer',
           getOAuthToken: cb => getToken().then(cb),
@@ -227,10 +227,13 @@ export function initPlayer(onReady, onStateChange, onError) {
       })
     }
 
-    if (window.Spotify) {
-      ready()
-    } else {
-      window.onSpotifyWebPlaybackSDKReady = ready
+    // Set callback before loading SDK so it's ready when SDK fires it
+    window.onSpotifyWebPlaybackSDKReady = ready
+
+    if (!document.querySelector('script[src*="spotify-player"]')) {
+      const script = document.createElement('script')
+      script.src = 'https://sdk.scdn.co/spotify-player.js'
+      document.head.appendChild(script)
     }
   })
 }

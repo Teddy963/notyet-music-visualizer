@@ -45,6 +45,7 @@ const particleVert = NOISE_GLSL + `
   uniform float uSpread;
   uniform float uSpeed;
   uniform float uMorph;
+  uniform float uNoiseScale;
 
   varying vec3  vColor;
   varying float vAlpha;
@@ -62,9 +63,9 @@ const particleVert = NOISE_GLSL + `
     float t = uTime * (0.06 + uSpeed * 0.1);
     float energy = (0.18 + uInstrument * uReact * 0.7 + uBeat * uReact * 0.2) * (0.6 + uSpread * 0.8);
     vec3 nb = pos * 0.35 + vec3(t);
-    pos.x += snoise(nb + vec3(17.3,  0.0,  0.0)) * 0.35 * energy;
-    pos.y += snoise(nb + vec3( 0.0, 31.7,  0.0)) * 0.35 * energy;
-    pos.z += snoise(nb + vec3( 0.0,  0.0, 53.1)) * 0.28 * energy;
+    pos.x += snoise(nb + vec3(17.3,  0.0,  0.0)) * uNoiseScale * energy;
+    pos.y += snoise(nb + vec3( 0.0, 31.7,  0.0)) * uNoiseScale * energy;
+    pos.z += snoise(nb + vec3( 0.0,  0.0, 53.1)) * uNoiseScale * 0.8 * energy;
 
     // Second octave
     vec3 nb2 = pos * 0.8 + vec3(t * 1.6 + 5.3);
@@ -82,10 +83,10 @@ const particleVert = NOISE_GLSL + `
     pos.y += cos(dAngle * 0.7) * drift;
     pos.z += sin(dAngle * 0.5 + 1.0) * drift * 0.4;
 
-    vAlpha = 0.10 + uOverall * 0.65 + uBeat * uReact * 0.5;
+    vAlpha = 0.03 + uOverall * 0.28 + uBeat * uReact * 0.18;
 
     vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
-    gl_PointSize = aSize * (420.0 / -mvPos.z) * (1.0 + uInstrument * uReact * 1.6 + uBeat * uReact * 1.2);
+    gl_PointSize = aSize * (380.0 / -mvPos.z) * (1.0 + uInstrument * uReact * 1.2 + uBeat * uReact * 0.8);
     gl_Position = projectionMatrix * mvPos;
   }
 `
@@ -124,54 +125,31 @@ const glitchFrag = `
   void main(){
     vec2 uv = vUv;
 
-    // ── Horizontal row displacement ──
-    float rowH    = 1.0 / 100.0;
-    float row     = floor(uv.y / rowH) * rowH;
-    float rn      = rand(vec2(row, floor(uTime * 6.0)));
-    float rowOn  = step(0.65 + (1.0 - uBass) * 0.2, rn);  // more rows on bass
-    float shift  = (rn - 0.5) * (uBass * 0.14 + uBeat * 0.10) * rowOn;
-    uv.x += shift;
-
-    // ── Block corruption on beat ──
-    float blockSeed = floor(uTime * 3.0);
-    float blockY    = rand(vec2(blockSeed, 0.3));
-    float blockH2   = 0.03 + rand(vec2(blockSeed, 0.7)) * 0.08;
-    float inBlk    = step(blockY, uv.y) * step(uv.y, blockY + blockH2) * uBeat;
-    float blockShift= (rand(vec2(blockSeed, 1.2)) - 0.5) * 0.12 * inBlk;
-    uv.x = mix(uv.x, uv.x + blockShift, inBlk);
-
-    // Clamp uv
-    uv = clamp(uv, 0.0, 1.0);
-
-    // ── Chromatic aberration ──
-    float aber = uBeat * 0.012 + uBass * 0.006;
-    float r = texture2D(uScene, uv + vec2( aber, 0.0)).r;
-    float g = texture2D(uScene, uv                   ).g;
-    float b = texture2D(uScene, uv - vec2( aber, 0.0)).b;
+    // ── Subtle chromatic aberration ──
+    float aber = uBeat * 0.003 + uBass * 0.0015 + uOverall * 0.001;
+    float r = texture2D(uScene, uv + vec2( aber, aber * 0.3)).r;
+    float g = texture2D(uScene, uv                          ).g;
+    float b = texture2D(uScene, uv - vec2( aber, aber * 0.3)).b;
     vec3 col = vec3(r, g, b);
 
-    // ── Scan lines ──
-    float scan = sin(vUv.y * 700.0) * 0.04 * (0.3 + uOverall * 0.7);
-    col -= scan;
-
-    // ── Pixel noise grain ──
-    float grain = (rand(vUv + fract(uTime)) - 0.5) * 0.07 * (0.4 + uOverall * 0.6);
+    // ── Fine film grain ──
+    float grain = (rand(vUv + fract(uTime * 0.5)) - 0.5) * 0.028 * (0.5 + uOverall * 0.5);
     col += grain;
 
     // ── Vignette ──
     vec2 vig = vUv * 2.0 - 1.0;
-    col *= 1.0 - dot(vig, vig) * 0.35;
+    col *= 1.0 - dot(vig, vig) * 0.42;
 
     gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
   }
 `
 
 // ── Layer config ─────────────────────────────────────────────────────────────
+// figure=true  → tight pose, no rotation, small particles (silhouette reads)
+// figure=false → additive glow, free rotation
 const LAYERS = [
-  { name:'core',       count:600,  radiusRange:[0.0,0.5],  sizeRange:[1.0,2.5], react:1.0,  rotSpeed:1.4,  ring:false, instrument:'kick'    },
-  { name:'shell',      count:2800, radiusRange:[0.8,2.2],  sizeRange:[0.4,1.4], react:0.6,  rotSpeed:0.4,  ring:false, instrument:'melody'  },
-  { name:'rings',      count:900,  radiusRange:[2.5,3.5],  sizeRange:[0.3,0.9], react:0.35, rotSpeed:0.12, ring:true,  instrument:'texture' },
-  { name:'atmosphere', count:2400, radiusRange:[3.5,9.0],  sizeRange:[0.5,1.6], react:0.12, rotSpeed:0.05, ring:false, instrument:'pad'     },
+  { name:'rings',      count:500,  pose:null,       poseScale:1.0,  sizeRange:[0.2,0.7],  react:0.35, rotSpeed:0.10, ring:true,  instrument:'texture', figure:false, noiseScale:0.35 },
+  { name:'atmosphere', count:2200, pose:'dispersed',poseScale:3.2,  sizeRange:[0.25,0.9], react:0.08, rotSpeed:0.03, ring:false, instrument:'pad',     figure:false, noiseScale:0.35 },
 ]
 
 // ── Pose generators ──────────────────────────────────────────────────────────
@@ -250,20 +228,34 @@ function hsl(h,s,l){
 }
 
 function buildLayer(cfg){
-  const {count,radiusRange,sizeRange,react,rotSpeed,ring}=cfg
+  const {count,pose,poseScale,sizeRange,react,rotSpeed,ring,figure,noiseScale}=cfg
   const pos=new Float32Array(count*3),col=new Float32Array(count*3)
   const sz=new Float32Array(count),off=new Float32Array(count),rad=new Float32Array(count)
-  const tgt=new Float32Array(count*3)  // target pose positions
+  const tgt=new Float32Array(count*3)
+
+  // Initial positions: pose-based or ring/sphere fallback
+  if(pose){
+    const pts=generatePose(pose,count)
+    for(let i=0;i<count;i++){
+      pos[i*3]  =pts[i*3]  *poseScale
+      pos[i*3+1]=pts[i*3+1]*poseScale
+      pos[i*3+2]=pts[i*3+2]*poseScale
+    }
+  } else {
+    for(let i=0;i<count;i++){
+      const theta=Math.random()*Math.PI*2
+      const r=2.0+Math.random()*1.2
+      if(ring){pos[i*3]=r*Math.cos(theta);pos[i*3+1]=(Math.random()-.5)*.2;pos[i*3+2]=r*Math.sin(theta)}
+      else{const phi=Math.acos(2*Math.random()-1);pos[i*3]=r*Math.sin(phi)*Math.cos(theta);pos[i*3+1]=r*Math.sin(phi)*Math.sin(theta);pos[i*3+2]=r*Math.cos(phi)}
+    }
+  }
+
   for(let i=0;i<count;i++){
-    const theta=Math.random()*Math.PI*2
-    const r=radiusRange[0]+Math.random()*(radiusRange[1]-radiusRange[0])
-    let x,y,z
-    if(ring){x=r*Math.cos(theta);y=(Math.random()-.5)*.2;z=r*Math.sin(theta)}
-    else{const phi=Math.acos(2*Math.random()-1);x=r*Math.sin(phi)*Math.cos(theta);y=r*Math.sin(phi)*Math.sin(theta);z=r*Math.cos(phi)}
-    pos[i*3]=x;pos[i*3+1]=y;pos[i*3+2]=z
     col[i*3]=1;col[i*3+1]=1;col[i*3+2]=1
     sz[i]=sizeRange[0]+Math.random()*(sizeRange[1]-sizeRange[0])
-    off[i]=Math.random()*Math.PI*2;rad[i]=r
+    off[i]=Math.random()*Math.PI*2
+    const p=pos.slice(i*3,i*3+3)
+    rad[i]=Math.sqrt(p[0]*p[0]+p[1]*p[1]+p[2]*p[2])
   }
   const geo=new THREE.BufferGeometry()
   geo.setAttribute('position',new THREE.BufferAttribute(pos,3))
@@ -276,27 +268,31 @@ function buildLayer(cfg){
     uTime:{value:0},uBeat:{value:0},uOverall:{value:0},
     uInstrument:{value:0},uReact:{value:react},uRotSpeed:{value:rotSpeed},
     uSpread:{value:0.5},uSpeed:{value:0.5},uMorph:{value:0},
+    uNoiseScale:{value:noiseScale??0.35},
   }
+  const blending = figure ? THREE.NormalBlending : THREE.AdditiveBlending
   const mat=new THREE.ShaderMaterial({
     vertexShader:particleVert,fragmentShader:particleFrag,uniforms,
-    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
+    transparent:true,depthWrite:false,blending,
   })
-  return{cfg,points:new THREE.Points(geo,mat),uniforms,colorAttr:geo.getAttribute('aColor'),targetAttr:geo.getAttribute('aTarget'),count}
+  const pts = new THREE.Points(geo,mat)
+  pts.renderOrder = figure ? 1 : 0
+  return{cfg,points:pts,uniforms,colorAttr:geo.getAttribute('aColor'),targetAttr:geo.getAttribute('aTarget'),count}
 }
 
 // ── Visualizer ───────────────────────────────────────────────────────────────
 export class Visualizer {
   constructor(container){
-    this.renderer=new THREE.WebGLRenderer({antialias:true})
+    this.renderer=new THREE.WebGLRenderer({antialias:true,alpha:true})
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio,2))
     this.renderer.setSize(window.innerWidth,window.innerHeight)
-    this.renderer.setClearColor(0x000000,1)
+    this.renderer.setClearColor(0x000000,0)
     container.appendChild(this.renderer.domElement)
 
     // Main scene
     this.scene=new THREE.Scene()
-    this.camera=new THREE.PerspectiveCamera(80,window.innerWidth/window.innerHeight,0.1,1000)
-    this.camera.position.z=5.0
+    this.camera=new THREE.PerspectiveCamera(75,window.innerWidth/window.innerHeight,0.1,1000)
+    this.camera.position.z=3.2
 
     // Render target for glitch pass
     this._rt=new THREE.WebGLRenderTarget(window.innerWidth,window.innerHeight,{
@@ -329,8 +325,8 @@ export class Visualizer {
     this.features={energy:0.5,valence:0.5,danceability:0.5,acousticness:0.5,tempo:120}
 
     this._layers=LAYERS.map(cfg=>{const l=buildLayer(cfg);this.scene.add(l.points);return l})
-    this._layers[2].points.rotation.x=Math.PI*0.18
-    this._layers[2].points.rotation.z=Math.PI*0.06
+    this._layers[0].points.rotation.x=Math.PI*0.18
+    this._layers[0].points.rotation.z=Math.PI*0.06
 
     // Ghost text background
     this._ghostCanvas = document.createElement('canvas')
@@ -341,6 +337,7 @@ export class Visualizer {
       new THREE.MeshBasicMaterial({ map: this._ghostTex, transparent: true, opacity: 1, depthWrite: false })
     )
     ghostMesh.position.z = -4
+    ghostMesh.visible = false
     this.scene.add(ghostMesh)
     this._ghostMesh = ghostMesh
     this._ghostTrack = ''
@@ -378,7 +375,6 @@ export class Visualizer {
   }
 
   setLyricLine(text, moodParams) {
-    this._drawGhost(text)
     this._lyricEntryTime = this.time
     if (moodParams) {
       this._moodTarget = moodParams
@@ -414,8 +410,6 @@ export class Visualizer {
     this.accentRGB = [Math.round(ar*255), Math.round(ag*255), Math.round(ab*255)]
 
     const palette = [
-      { hue: this._mood.hue,   sat: this._mood.sat * 0.3, lb: 85, lv: 8  },
-      { hue: this._mood.hue,   sat: this._mood.sat,        lb: 52, lv: 15 },
       { hue: accentHue,        sat: this._mood.sat * 0.9,  lb: 48, lv: 12 },
       { hue: this._mood.hue,   sat: this._mood.sat * 0.7,  lb: 18, lv: 10 },
     ]
@@ -494,8 +488,6 @@ export class Visualizer {
     this.accentRGB = [Math.round(ar*255), Math.round(ag*255), Math.round(ab*255)]
 
     const palette = [
-      {hue:mainHue,   sat:sat*0.3, lb:85, lv:8 },
-      {hue:mainHue,   sat:sat,     lb:52, lv:15},
       {hue:accentHue, sat:sat*0.9, lb:48, lv:12},
       {hue:mainHue,   sat:sat*0.7, lb:18, lv:10},
     ]
@@ -523,8 +515,6 @@ export class Visualizer {
     this.accentRGB=[Math.round(ar*255),Math.round(ag*255),Math.round(ab*255)]
 
     const palette=[
-      {hue:mainHue,   sat:sat*0.3, lb:88, lv:8 },
-      {hue:mainHue,   sat:sat,     lb:52, lv:15},
       {hue:accentHue, sat:sat*0.9, lb:45, lv:12},
       {hue:mainHue,   sat:sat*0.7, lb:18, lv:10},
     ]
@@ -562,6 +552,8 @@ export class Visualizer {
       uniforms.uInstrument.value=s[cfg.instrument]??s.overall
       uniforms.uSpread.value    =this._mood.spread
       uniforms.uSpeed.value     =this._mood.speed
+      // noiseScale: figure layers stay tight, glow layers breathe freely
+      uniforms.uNoiseScale.value=cfg.noiseScale??0.35
     })
 
     // Glitch uniforms — energy drives intensity
@@ -574,13 +566,9 @@ export class Visualizer {
     gu.uEnergy.value =this.features.energy
 
     // Rotations
-    const [core,shell,rings,atmo]=this._layers.map(l=>l.points)
+    const [rings,atmo]=this._layers.map(l=>l.points)
     const tempo=this.features.tempo/120
     const sp = 0.5 + this._mood.speed * 1.0
-    core.rotation.y +=(0.005+s.kick   *0.015)*tempo*sp
-    core.rotation.x +=(0.003+s.texture*0.010)*tempo*sp
-    shell.rotation.y+=(0.0018+s.melody*0.005)*tempo*sp
-    shell.rotation.x+=0.0009*sp
     rings.rotation.y+=(0.001 +s.texture*0.003)*tempo*sp
     rings.rotation.z+=0.0005*sp
     atmo.rotation.y +=0.0005*sp
@@ -631,7 +619,7 @@ export class Visualizer {
 
     // 1. Render particles → render target
     this.renderer.setRenderTarget(this._rt)
-    this.renderer.setClearColor(0x000000, 1)
+    this.renderer.setClearColor(0x000000, 0)
     this.renderer.clear(true, true, true)
     this.renderer.render(this.scene, this.camera)
 

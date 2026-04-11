@@ -6,6 +6,8 @@ import { AudioSync } from './audioSync.js'
 import { Visualizer } from './visualizer.js'
 import { DataOverlay } from './overlay.js'
 import { LyricGraph } from './lyricGraph.js'
+import { FigureRenderer } from './figureRenderer.js'
+import { LandscapeRenderer } from './landscapeRenderer.js'
 
 const KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -180,8 +182,10 @@ function _startPositionPolling() {
 // ── Launch ──
 function launchVisualizer(audioSource) {
   const visualizer  = new Visualizer(app)
+  const landscape   = new LandscapeRenderer(app)
   const overlay     = new DataOverlay(app)
   const lyricGraph  = new LyricGraph(app)
+  const figureRenderer = new FigureRenderer(app)
 
   nowPlaying.style.display    = 'block'
   analysisToggle.style.display = 'flex'
@@ -196,7 +200,6 @@ function launchVisualizer(audioSource) {
     _lyrics = null
     _lyricsActive = false
     _lastLine = ''
-    visualizer._drawGhost(track.name)
     overlay.setTrack(track.name)
     lyricGraph.setTrack(track.name)
 
@@ -235,7 +238,11 @@ function launchVisualizer(audioSource) {
     visualizer.update(audioSource, delta)
     overlay.setColor(...visualizer.accentRGB)
     overlay.update(audioSource, delta)
+    landscape.update(audioSource, delta)
+    landscape.setColor(...visualizer.accentRGB)
     lyricGraph.update(audioSource, delta)
+    figureRenderer.update(audioSource, delta)
+    figureRenderer.setColor(...visualizer.accentRGB)
     updateMeters(audioSource)
 
     // Lyrics sync — extrapolate position between polls
@@ -248,6 +255,9 @@ function launchVisualizer(audioSource) {
         _lastLineIdx = result.idx
         const mood = _moodMap?.[result.idx] ?? null
         visualizer.setLyricLine(result.words, mood)
+        overlay.setSubtitle(result.words)
+        if (mood?.shape) figureRenderer.setShape(mood.shape)
+        if (mood) landscape.setMood(mood)
         lyricGraph.setActiveIndex(result.idx)
         lyricGraph.setColor(...visualizer.accentRGB)
       }

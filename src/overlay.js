@@ -12,6 +12,11 @@ export class DataOverlay {
     this._label  = 'SECTOR-0-0000'
     this._trackCode = ''
 
+    // Subtitle state
+    this._subText  = ''
+    this._subAlpha = 0
+    this._subTimer = 0   // counts up after set, fades in then holds
+
     this._resize()
     window.addEventListener('resize', () => this._resize())
     this._spawnRings(6)
@@ -23,6 +28,12 @@ export class DataOverlay {
   }
 
   setColor(r, g, b) { this.color = [r, g, b] }
+
+  setSubtitle(text) {
+    this._subText  = text
+    this._subTimer = 0
+    this._subAlpha = 0
+  }
 
   setTrack(name) {
     // Generate a deterministic sector code from track name
@@ -130,6 +141,30 @@ export class DataOverlay {
     ctx.lineWidth = 1
     for (const [x, y, sx, sy] of [[pad,pad,1,1],[w-pad,pad,-1,1],[pad,h-pad,1,-1],[w-pad,h-pad,-1,-1]]) {
       ctx.beginPath(); ctx.moveTo(x+sx*blen,y); ctx.lineTo(x,y); ctx.lineTo(x,y+sy*blen); ctx.stroke()
+    }
+
+    // ── Subtitle ─────────────────────────────────────────────────────────
+    if (this._subText) {
+      this._subTimer += delta
+      // Fade in over 0.25s, hold, fade out after 3.5s over 0.5s
+      const fadeIn  = Math.min(1, this._subTimer / 0.25)
+      const fadeOut = this._subTimer > 3.5 ? Math.max(0, 1 - (this._subTimer - 3.5) / 0.5) : 1
+      this._subAlpha = fadeIn * fadeOut
+      if (this._subTimer > 4.0) { this._subText = ''; this._subAlpha = 0 }
+
+      if (this._subAlpha > 0.01) {
+        const subY = h - 64
+        const a    = this._subAlpha
+        // Warm white, slightly cream
+        ctx.font      = `300 15px Georgia, "Times New Roman", serif`
+        ctx.textAlign = 'center'
+        // Subtle text shadow
+        ctx.shadowColor = 'rgba(0,0,0,0.7)'
+        ctx.shadowBlur  = 8
+        ctx.fillStyle = `rgba(255, 248, 220, ${a})`
+        ctx.fillText(this._subText, cx, subY)
+        ctx.shadowBlur = 0
+      }
     }
 
     // ── Bottom HUD text ──────────────────────────────────────────────────
