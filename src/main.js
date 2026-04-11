@@ -1,9 +1,11 @@
 import './style.css'
-import { login, handleCallback, isLoggedIn, startPolling, initPlayer, transferPlayback } from './spotify.js'
+import { login, handleCallback, isLoggedIn, startPolling, initPlayer, transferPlayback, getLyrics, getPlaybackState } from './spotify.js'
+import { analyzeLyrics } from './moodAnalyzer.js'
 import { AudioAnalyzer } from './audio.js'
 import { AudioSync } from './audioSync.js'
 import { Visualizer } from './visualizer.js'
-// import { DataOverlay } from './overlay.js'
+import { DataOverlay } from './overlay.js'
+import { LyricGraph } from './lyricGraph.js'
 
 const KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -141,17 +143,80 @@ async function startAudioMode(sourceType) {
   launchVisualizer(analyzer)
 }
 
+// ── Lyrics state ──
+let _lyrics       = null
+let _moodMap      = null   // index → mood params from Claude
+let _lyricsPos    = 0
+let _lyricsFetch  = performance.now()
+let _lyricsActive = false
+let _lastLine     = ''
+let _lastLineIdx  = -1
+
+function _findCurrentLine(posMs) {
+  if (!_lyrics) return null
+  let current = null
+  let idx = -1
+  for (let i = 0; i < _lyrics.length; i++) {
+    if (_lyrics[i].startTimeMs <= posMs) { current = _lyrics[i]; idx = i }
+    else break
+  }
+  return current ? { words: current.words, idx } : null
+}
+
+function _startPositionPolling() {
+  async function poll() {
+    try {
+      const state = await getPlaybackState()
+      if (state?.progress_ms != null) {
+        _lyricsPos   = state.progress_ms
+        _lyricsFetch = performance.now()
+      }
+    } catch {}
+  }
+  poll()
+  setInterval(poll, 2000)
+}
+
 // ── Launch ──
 function launchVisualizer(audioSource) {
-  const visualizer = new Visualizer(app)
+  const visualizer  = new Visualizer(app)
+  const overlay     = new DataOverlay(app)
+  const lyricGraph  = new LyricGraph(app)
 
   nowPlaying.style.display    = 'block'
   analysisToggle.style.display = 'flex'
 
-  startPolling((track, features, analysis) => {
+  _startPositionPolling()
+
+  startPolling(async (track, features, analysis) => {
     nowPlaying.querySelector('.track').textContent  = track.name
     nowPlaying.querySelector('.artist').textContent = track.artists.map(a => a.name).join(', ')
+
+    // Fetch lyrics for new track
+    _lyrics = null
+    _lyricsActive = false
+    _lastLine = ''
     visualizer._drawGhost(track.name)
+    overlay.setTrack(track.name)
+    lyricGraph.setTrack(track.name)
+
+    const lines = await getLyrics(track)
+    console.log('[lyrics]', track.name, lines ? `${lines.length} lines` : 'not found')
+    _moodMap = null
+    if (lines?.length) {
+      _lyrics = lines
+      _lyricsActive = true
+      _lastLine = ''
+      _lastLineIdx = -1
+      visualizer.lyricsMode = true
+      lyricGraph.setLines(lines)
+      // Analyze mood in background — no await, applies when ready
+      analyzeLyrics(track.name, track.artists?.[0]?.name, lines).then(map => {
+        if (map) { _moodMap = map; console.log('[mood] ready', Object.keys(map).length, 'lines') }
+      })
+    } else {
+      visualizer.lyricsMode = false
+    }
 
     if (features) {
       visualizer.setFeatures(features)
@@ -168,7 +233,25 @@ function launchVisualizer(audioSource) {
     lastTime    = now
     audioSource.update()
     visualizer.update(audioSource, delta)
+    overlay.setColor(...visualizer.accentRGB)
+    overlay.update(audioSource, delta)
+    lyricGraph.update(audioSource, delta)
     updateMeters(audioSource)
+
+    // Lyrics sync — extrapolate position between polls
+    if (_lyricsActive) {
+      const elapsed = performance.now() - _lyricsFetch
+      const pos = _lyricsPos + elapsed
+      const result = _findCurrentLine(pos)
+      if (result && result.words !== _lastLine) {
+        _lastLine = result.words
+        _lastLineIdx = result.idx
+        const mood = _moodMap?.[result.idx] ?? null
+        visualizer.setLyricLine(result.words, mood)
+        lyricGraph.setActiveIndex(result.idx)
+        lyricGraph.setColor(...visualizer.accentRGB)
+      }
+    }
   }
   animate()
 }

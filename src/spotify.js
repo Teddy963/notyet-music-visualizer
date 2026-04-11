@@ -138,16 +138,36 @@ export async function getPlaybackState() {
   return apiFetch('/me/player')
 }
 
-export async function getLyrics(trackId) {
+// lrclib.net — free synced lyrics, no CORS issues
+export async function getLyrics(track) {
   try {
-    const token = await getToken()
-    const res = await fetch(
-      `https://spclient.wg.spotify.com/color-lyrics/v2/track/${trackId}?format=json&vocalRemoval=false&market=from_token`,
-      { headers: { Authorization: `Bearer ${token}`, 'app-platform': 'WebPlayer' } }
-    )
+    const artist   = track.artists?.[0]?.name ?? ''
+    const name     = track.name ?? ''
+    const album    = track.album?.name ?? ''
+    const duration = Math.round((track.duration_ms ?? 0) / 1000)
+
+    const params = new URLSearchParams({ artist_name: artist, track_name: name, album_name: album, duration })
+    const res = await fetch(`https://lrclib.net/api/get?${params}`)
     if (!res.ok) return null
+
     const data = await res.json()
-    return data?.lyrics?.lines ?? null
+    const lrc  = data.syncedLyrics || data.plainLyrics
+    if (!lrc) return null
+
+    // Parse LRC format: [mm:ss.xx] text  OR plain text lines
+    if (data.syncedLyrics) {
+      return lrc.split('\n')
+        .map(line => {
+          const m = line.match(/^\[(\d+):(\d+\.\d+)\]\s*(.*)$/)
+          if (!m) return null
+          const ms = (parseInt(m[1]) * 60 + parseFloat(m[2])) * 1000
+          return { startTimeMs: ms, words: m[3] }
+        })
+        .filter(l => l && l.words.trim())
+    } else {
+      // Unsyced — return as single block, no timing
+      return lrc.split('\n').filter(l => l.trim()).map((words, i) => ({ startTimeMs: i * 4000, words }))
+    }
   } catch {
     return null
   }

@@ -34,6 +34,7 @@ const particleVert = NOISE_GLSL + `
   attribute vec3  aColor;
   attribute float aOffset;
   attribute float aRadius;
+  attribute vec3  aTarget;
 
   uniform float uTime;
   uniform float uBeat;
@@ -41,28 +42,37 @@ const particleVert = NOISE_GLSL + `
   uniform float uInstrument;
   uniform float uReact;
   uniform float uRotSpeed;
+  uniform float uSpread;
+  uniform float uSpeed;
+  uniform float uMorph;
 
   varying vec3  vColor;
   varying float vAlpha;
 
   void main(){
     vColor = aColor;
-    vec3 pos = position;
+    // Morph between sphere position and target pose
+    vec3 pos = mix(position, aTarget, uMorph);
 
-    // True 3D morphing — each axis independently displaced with uncorrelated noise
-    float energy = 0.18 + uInstrument * uReact * 0.7 + uBeat * uReact * 0.2;
-    vec3 nb = pos * 0.35 + vec3(uTime * 0.09);
+    // Spread: contract (0) ↔ expand (1) — scales the whole form
+    float spreadScale = 0.78 + uSpread * 0.44;
+    pos *= spreadScale;
+
+    // True 3D morphing — speed controlled by uSpeed
+    float t = uTime * (0.06 + uSpeed * 0.1);
+    float energy = (0.18 + uInstrument * uReact * 0.7 + uBeat * uReact * 0.2) * (0.6 + uSpread * 0.8);
+    vec3 nb = pos * 0.35 + vec3(t);
     pos.x += snoise(nb + vec3(17.3,  0.0,  0.0)) * 0.35 * energy;
     pos.y += snoise(nb + vec3( 0.0, 31.7,  0.0)) * 0.35 * energy;
     pos.z += snoise(nb + vec3( 0.0,  0.0, 53.1)) * 0.28 * energy;
 
-    // Second octave — finer detail
-    vec3 nb2 = pos * 0.8 + vec3(uTime * 0.15 + 5.3);
+    // Second octave
+    vec3 nb2 = pos * 0.8 + vec3(t * 1.6 + 5.3);
     pos.x += snoise(nb2 + vec3(7.1, 0.0, 0.0)) * 0.1 * energy;
     pos.y += snoise(nb2 + vec3(0.0, 11.4, 0.0)) * 0.1 * energy;
 
-    // Breathing
-    float breathe = sin(uTime * 0.9 + aOffset * 0.5) * 0.04;
+    // Breathing — speed-driven
+    float breathe = sin(uTime * (0.7 + uSpeed * 0.8) + aOffset * 0.5) * 0.04;
     pos *= 1.0 + breathe;
 
     // Drift
@@ -134,7 +144,7 @@ const glitchFrag = `
     uv = clamp(uv, 0.0, 1.0);
 
     // ── Chromatic aberration ──
-    float aber = uBeat * 0.09 + uBass * 0.03 + uEnergy * 0.012;
+    float aber = uBeat * 0.012 + uBass * 0.006;
     float r = texture2D(uScene, uv + vec2( aber, 0.0)).r;
     float g = texture2D(uScene, uv                   ).g;
     float b = texture2D(uScene, uv - vec2( aber, 0.0)).b;
@@ -158,11 +168,79 @@ const glitchFrag = `
 
 // ── Layer config ─────────────────────────────────────────────────────────────
 const LAYERS = [
-  { name:'core',       count:600,  radiusRange:[0.0,0.45], sizeRange:[1.0,2.5], react:1.0,  rotSpeed:1.4,  ring:false, instrument:'kick'    },
-  { name:'shell',      count:2800, radiusRange:[1.0,1.9],  sizeRange:[0.4,1.4], react:0.6,  rotSpeed:0.4,  ring:false, instrument:'melody'  },
-  { name:'rings',      count:900,  radiusRange:[2.1,2.5],  sizeRange:[0.3,0.9], react:0.35, rotSpeed:0.12, ring:true,  instrument:'texture' },
-  { name:'atmosphere', count:1800, radiusRange:[3.0,5.0],  sizeRange:[0.6,1.8], react:0.12, rotSpeed:0.05, ring:false, instrument:'pad'     },
+  { name:'core',       count:600,  radiusRange:[0.0,0.5],  sizeRange:[1.0,2.5], react:1.0,  rotSpeed:1.4,  ring:false, instrument:'kick'    },
+  { name:'shell',      count:2800, radiusRange:[0.8,2.2],  sizeRange:[0.4,1.4], react:0.6,  rotSpeed:0.4,  ring:false, instrument:'melody'  },
+  { name:'rings',      count:900,  radiusRange:[2.5,3.5],  sizeRange:[0.3,0.9], react:0.35, rotSpeed:0.12, ring:true,  instrument:'texture' },
+  { name:'atmosphere', count:2400, radiusRange:[3.5,9.0],  sizeRange:[0.5,1.6], react:0.12, rotSpeed:0.05, ring:false, instrument:'pad'     },
 ]
+
+// ── Pose generators ──────────────────────────────────────────────────────────
+function randSphere(r){ const th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1);return[r*Math.sin(ph)*Math.cos(th),r*Math.sin(ph)*Math.sin(th),r*Math.cos(ph)] }
+function randEllipsoid(rx,ry,rz){ const [x,y,z]=randSphere(1);return[x*rx,y*ry,z*rz] }
+function randCylinder(r,h){ const a=Math.random()*Math.PI*2,t=(Math.random()-.5)*h;return[r*Math.cos(a),t,r*Math.sin(a)] }
+
+function generatePose(name, count) {
+  const pts = new Float32Array(count * 3)
+  const w = (x,y,z,i)=>{ pts[i*3]=x; pts[i*3+1]=y; pts[i*3+2]=z }
+
+  for (let i = 0; i < count; i++) {
+    let p
+    const t = i / count
+
+    if (name === 'standing') {
+      // Head 8%, torso 35%, arms 20%, legs 37%
+      if (t < 0.08)      { p = randSphere(0.22); p[1] += 1.35 }
+      else if (t < 0.43) { p = randEllipsoid(0.22, 0.45, 0.18); p[1] += 0.7 }
+      else if (t < 0.63) {
+        const side = t < 0.53 ? -1 : 1
+        p = randEllipsoid(0.35, 0.1, 0.1)
+        p[0] = p[0] * 0.5 + side * 0.38; p[1] += 0.75
+      }
+      else {
+        const side = t < 0.815 ? -1 : 1
+        p = randEllipsoid(0.1, 0.48, 0.1)
+        p[0] += side * 0.12; p[1] -= 0.25
+      }
+    }
+    else if (name === 'running') {
+      if (t < 0.08)      { p = randSphere(0.22); p[1] += 1.35; p[0] -= 0.1 }
+      else if (t < 0.43) { p = randEllipsoid(0.22, 0.42, 0.18); p[1] += 0.68; p[0] -= 0.08 }
+      else if (t < 0.53) { p = randEllipsoid(0.3,0.1,0.1); p[0] -= 0.5; p[1] += 1.0 }   // front arm
+      else if (t < 0.63) { p = randEllipsoid(0.3,0.1,0.1); p[0] += 0.45; p[1] += 0.45 }  // back arm
+      else if (t < 0.815){ p = randEllipsoid(0.1,0.45,0.1); p[0] += 0.15; p[1] -= 0.15; p[2] += 0.2 } // front leg
+      else               { p = randEllipsoid(0.1,0.42,0.1); p[0] -= 0.12; p[1] -= 0.35; p[2] -= 0.25 } // back leg
+    }
+    else if (name === 'falling') {
+      if (t < 0.08)      { p = randSphere(0.22); p[1] += 0.5; p[0] -= 0.8 }
+      else if (t < 0.43) { p = randEllipsoid(0.45, 0.22, 0.18); p[0] -= 0.2; p[1] += 0.1 }
+      else if (t < 0.63) { p = randEllipsoid(0.4,0.1,0.1); p[1] += (t<0.53 ? 0.35 : -0.1); p[0] += (t<0.53 ? 0.3 : -0.6) }
+      else               { p = randEllipsoid(0.1,0.48,0.1); p[0] += (t<0.815 ? 0.5 : -0.1); p[1] -= 0.5 }
+    }
+    else if (name === 'curled') {
+      if (t < 0.1)       { p = randSphere(0.22); p[1] += 0.3; p[0] -= 0.3; p[2] += 0.15 }
+      else if (t < 0.5)  { p = randEllipsoid(0.28, 0.28, 0.22); p[1] -= 0.1 }
+      else               { p = randEllipsoid(0.12, 0.35, 0.12); const a=(t-.5)*Math.PI*2.5; p[0]=Math.cos(a)*0.4; p[1]=Math.sin(a)*0.3-.2; p[2]=0.1 }
+    }
+    else if (name === 'reaching') {
+      if (t < 0.08)      { p = randSphere(0.22); p[1] += 1.5 }
+      else if (t < 0.43) { p = randEllipsoid(0.22, 0.45, 0.18); p[1] += 0.75 }
+      else if (t < 0.63) { p = randEllipsoid(0.1, 0.5, 0.1); p[0] += (t<0.53 ? -0.35 : 0.35); p[1] += 1.25 }
+      else               { const s=t<0.815?-1:1; p=randEllipsoid(0.1,0.48,0.1); p[0]+=s*0.12; p[1]-=0.25 }
+    }
+    else if (name === 'dispersed') {
+      p = randSphere(2.0 + Math.random() * 2.0)
+    }
+    else if (name === 'contracted') {
+      p = randSphere(0.5 + Math.random() * 0.3)
+    }
+    else { // default sphere
+      p = randSphere(0.5 + Math.random() * 1.2)
+    }
+
+    w(p[0], p[1], p[2], i)
+  }
+  return pts
+}
 
 function hsl(h,s,l){
   h=((h%360)+360)%360;s/=100;l/=100
@@ -175,6 +253,7 @@ function buildLayer(cfg){
   const {count,radiusRange,sizeRange,react,rotSpeed,ring}=cfg
   const pos=new Float32Array(count*3),col=new Float32Array(count*3)
   const sz=new Float32Array(count),off=new Float32Array(count),rad=new Float32Array(count)
+  const tgt=new Float32Array(count*3)  // target pose positions
   for(let i=0;i<count;i++){
     const theta=Math.random()*Math.PI*2
     const r=radiusRange[0]+Math.random()*(radiusRange[1]-radiusRange[0])
@@ -188,6 +267,7 @@ function buildLayer(cfg){
   }
   const geo=new THREE.BufferGeometry()
   geo.setAttribute('position',new THREE.BufferAttribute(pos,3))
+  geo.setAttribute('aTarget', new THREE.BufferAttribute(tgt,3))
   geo.setAttribute('aColor',  new THREE.BufferAttribute(col,3))
   geo.setAttribute('aSize',   new THREE.BufferAttribute(sz,1))
   geo.setAttribute('aOffset', new THREE.BufferAttribute(off,1))
@@ -195,12 +275,13 @@ function buildLayer(cfg){
   const uniforms={
     uTime:{value:0},uBeat:{value:0},uOverall:{value:0},
     uInstrument:{value:0},uReact:{value:react},uRotSpeed:{value:rotSpeed},
+    uSpread:{value:0.5},uSpeed:{value:0.5},uMorph:{value:0},
   }
   const mat=new THREE.ShaderMaterial({
     vertexShader:particleVert,fragmentShader:particleFrag,uniforms,
     transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
   })
-  return{cfg,points:new THREE.Points(geo,mat),uniforms,colorAttr:geo.getAttribute('aColor'),count}
+  return{cfg,points:new THREE.Points(geo,mat),uniforms,colorAttr:geo.getAttribute('aColor'),targetAttr:geo.getAttribute('aTarget'),count}
 }
 
 // ── Visualizer ───────────────────────────────────────────────────────────────
@@ -214,8 +295,8 @@ export class Visualizer {
 
     // Main scene
     this.scene=new THREE.Scene()
-    this.camera=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight,0.1,1000)
-    this.camera.position.z=6.5
+    this.camera=new THREE.PerspectiveCamera(80,window.innerWidth/window.innerHeight,0.1,1000)
+    this.camera.position.z=5.0
 
     // Render target for glitch pass
     this._rt=new THREE.WebGLRenderTarget(window.innerWidth,window.innerHeight,{
@@ -265,6 +346,17 @@ export class Visualizer {
     this._ghostTrack = ''
     this._drawGhost('NOTYET')
 
+    this.lyricsMode = false
+    this._lyricEntryTime = -999
+    this._ghostScale = 1.0
+    // Mood state (from Claude analysis)
+    this._mood = { hue: 200, sat: 65, energy: 0.5, spread: 0.5, speed: 0.5 }
+    this._moodTarget = null
+    this._moodLerp = 0
+    // Pose morphing state
+    this._morphStart = undefined
+    this._morphDuration = 1.5
+    this._morphHold = 4.0
     // Expose accent color for overlay
     this.accentRGB=[220,255,80]
 
@@ -285,22 +377,99 @@ export class Visualizer {
     this._updateColors()
   }
 
+  setLyricLine(text, moodParams) {
+    this._drawGhost(text)
+    this._lyricEntryTime = this.time
+    if (moodParams) {
+      this._moodTarget = moodParams
+      this._moodLerp = 0
+      if (moodParams.shape) this.setShape(moodParams.shape)
+    }
+  }
+
+  setShape(poseName) {
+    this._layers.forEach(layer => {
+      const newTargets = generatePose(poseName, layer.count)
+      layer.targetAttr.array.set(newTargets)
+      layer.targetAttr.needsUpdate = true
+    })
+    this._morphStart = this.time
+  }
+
+  _tickMood(delta) {
+    if (!this._moodTarget) return
+    this._moodLerp = Math.min(1, this._moodLerp + delta * 1.2) // ~0.8s transition
+    const t = this._moodLerp
+    const lerp = (a, b) => a + (b - a) * t
+    this._mood.hue    = lerp(this._mood.hue,    this._moodTarget.hue)
+    this._mood.sat    = lerp(this._mood.sat,    this._moodTarget.sat)
+    this._mood.energy = lerp(this._mood.energy, this._moodTarget.energy)
+    this._mood.spread = lerp(this._mood.spread, this._moodTarget.spread)
+    this._mood.speed  = lerp(this._mood.speed,  this._moodTarget.speed)
+    if (t >= 1) this._moodTarget = null
+
+    // Apply mood colors to particles
+    const accentHue = (this._mood.hue + 150) % 360
+    const [ar, ag, ab] = hsl(accentHue, this._mood.sat, 60)
+    this.accentRGB = [Math.round(ar*255), Math.round(ag*255), Math.round(ab*255)]
+
+    const palette = [
+      { hue: this._mood.hue,   sat: this._mood.sat * 0.3, lb: 85, lv: 8  },
+      { hue: this._mood.hue,   sat: this._mood.sat,        lb: 52, lv: 15 },
+      { hue: accentHue,        sat: this._mood.sat * 0.9,  lb: 48, lv: 12 },
+      { hue: this._mood.hue,   sat: this._mood.sat * 0.7,  lb: 18, lv: 10 },
+    ]
+    this._layers.forEach((layer, li) => {
+      const { hue, sat: s, lb, lv } = palette[li]
+      const arr = layer.colorAttr.array
+      for (let i = 0; i < layer.count; i++) {
+        const t2 = i / layer.count
+        const l = lb + Math.sin(t2 * Math.PI * 13 + i * 0.09) * lv
+        const [r, g, b] = hsl(hue, s, Math.max(0, Math.min(100, l)))
+        arr[i*3]=r; arr[i*3+1]=g; arr[i*3+2]=b
+      }
+      layer.colorAttr.needsUpdate = true
+    })
+  }
+
   _drawGhost(text) {
     const c = this._ghostCanvas
     const ctx = c.getContext('2d')
     ctx.clearRect(0, 0, c.width, c.height)
-    const words = text.toUpperCase().split(' ')
     ctx.textAlign = 'center'
-    ctx.fillStyle = 'rgba(200,200,200,1)'
-    if (words.length >= 2) {
-      ctx.font = `bold 160px "Helvetica Neue", Helvetica, Arial, sans-serif`
-      ctx.fillText(words[0], 256, 200)
-      ctx.font = `bold 110px "Helvetica Neue", Helvetica, Arial, sans-serif`
-      ctx.fillText(words.slice(1).join(' '), 256, 340)
-    } else {
-      ctx.font = `bold 170px "Helvetica Neue", Helvetica, Arial, sans-serif`
-      ctx.fillText(words[0] || '', 256, 290)
+    ctx.fillStyle = 'rgba(210,210,210,1)'
+
+    const upper = text.toUpperCase()
+    const maxW  = 460
+
+    // Try large size first, shrink if too wide
+    let fontSize = 150
+    ctx.font = `bold ${fontSize}px "Helvetica Neue", Helvetica, Arial, sans-serif`
+    while (ctx.measureText(upper).width > maxW && fontSize > 40) {
+      fontSize -= 8
+      ctx.font = `bold ${fontSize}px "Helvetica Neue", Helvetica, Arial, sans-serif`
     }
+
+    // Word-wrap into lines
+    const wordList = upper.split(' ')
+    const lines = []
+    let cur = ''
+    for (const w of wordList) {
+      const test = cur ? cur + ' ' + w : w
+      if (ctx.measureText(test).width > maxW && cur) {
+        lines.push(cur); cur = w
+      } else { cur = test }
+    }
+    if (cur) lines.push(cur)
+
+    const lineH = fontSize * 1.1
+    const totalH = lines.length * lineH
+    const startY = (512 - totalH) / 2 + fontSize * 0.85
+
+    lines.forEach((line, i) => {
+      ctx.fillText(line, 256, startY + i * lineH)
+    })
+
     this._ghostTex.needsUpdate = true
   }
 
@@ -391,6 +560,8 @@ export class Visualizer {
       uniforms.uBeat.value      =s.beat
       uniforms.uOverall.value   =s.overall
       uniforms.uInstrument.value=s[cfg.instrument]??s.overall
+      uniforms.uSpread.value    =this._mood.spread
+      uniforms.uSpeed.value     =this._mood.speed
     })
 
     // Glitch uniforms — energy drives intensity
@@ -405,24 +576,58 @@ export class Visualizer {
     // Rotations
     const [core,shell,rings,atmo]=this._layers.map(l=>l.points)
     const tempo=this.features.tempo/120
-    core.rotation.y +=(0.005+s.kick   *0.015)*tempo
-    core.rotation.x +=(0.003+s.texture*0.010)*tempo
-    shell.rotation.y+=(0.0018+s.melody*0.005)*tempo
-    shell.rotation.x+=0.0009
-    rings.rotation.y+=(0.001 +s.texture*0.003)*tempo
-    rings.rotation.z+=0.0005
-    atmo.rotation.y +=0.0005
-    atmo.rotation.x -=0.0002
+    const sp = 0.5 + this._mood.speed * 1.0
+    core.rotation.y +=(0.005+s.kick   *0.015)*tempo*sp
+    core.rotation.x +=(0.003+s.texture*0.010)*tempo*sp
+    shell.rotation.y+=(0.0018+s.melody*0.005)*tempo*sp
+    shell.rotation.x+=0.0009*sp
+    rings.rotation.y+=(0.001 +s.texture*0.003)*tempo*sp
+    rings.rotation.z+=0.0005*sp
+    atmo.rotation.y +=0.0005*sp
+    atmo.rotation.x -=0.0002*sp
 
     this.camera.position.x=Math.sin(this.time*0.07)*0.5
     this.camera.position.y=Math.cos(this.time*0.045)*0.3
     this.camera.lookAt(0,0,0)
 
-    // Ghost text: visible when quiet, fades with energy
-    this._ghostMesh.material.opacity = Math.max(0, 0.07 - s.overall * 0.12)
+    // Ghost text animation
+    if (this.lyricsMode) {
+      const age = this.time - this._lyricEntryTime
+      // Entrance: scale 0.88 → 1.0 over 0.4s, then settle + beat pulse
+      const entryScale = age < 0.4 ? 0.88 + (age / 0.4) * 0.12 : 1.0
+      const beatScale  = 1.0 + s.beat * 0.04
+      this._ghostMesh.scale.setScalar(entryScale * beatScale)
+      // Opacity: fade in over 0.25s, pulse with beat
+      const entryAlpha = Math.min(1, age / 0.25)
+      this._ghostMesh.material.opacity = entryAlpha * (0.5 + s.beat * 0.2)
+      // Slight vertical drift with audio
+      this._ghostMesh.position.y = Math.sin(this.time * 0.6) * 0.15 * s.overall
+    } else {
+      this._ghostMesh.scale.setScalar(1.0)
+      this._ghostMesh.position.y = 0
+      this._ghostMesh.material.opacity = Math.max(0, 0.07 - s.overall * 0.12)
+    }
 
-    // Auto-derive color from FFT when no Spotify features
-    if (!this._spotifyFeatures) this._autoColorFromAudio(audio)
+    // Mood transition tick
+    if (this._moodTarget) this._tickMood(delta)
+    else if (!this._spotifyFeatures) this._autoColorFromAudio(audio)
+
+    // Pose morph animation
+    if (this._morphStart !== undefined) {
+      const elapsed = this.time - this._morphStart
+      let morphVal
+      if (elapsed < this._morphDuration) {
+        const t = elapsed / this._morphDuration
+        morphVal = t * t * (3 - 2 * t)  // smoothstep ease
+      } else if (elapsed < this._morphDuration + this._morphHold) {
+        morphVal = 1.0
+      } else {
+        const t = (elapsed - this._morphDuration - this._morphHold) / this._morphDuration
+        morphVal = Math.max(0, 1.0 - t * t * (3 - 2 * t))
+        if (morphVal <= 0) this._morphStart = undefined
+      }
+      this._layers.forEach(({uniforms}) => { uniforms.uMorph.value = morphVal ?? 0 })
+    }
 
     // 1. Render particles → render target
     this.renderer.setRenderTarget(this._rt)
