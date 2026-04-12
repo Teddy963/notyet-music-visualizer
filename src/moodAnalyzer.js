@@ -23,18 +23,23 @@ Return a JSON array — one object per line in the same order:
     "energy": 0.6,     // visual intensity 0.0-1.0
     "spread": 0.5,     // particle spread/expansion 0.0-1.0 (0=contracted, 1=exploded)
     "speed": 0.5,      // motion speed 0.0-1.0
-    "shape": "standing" // human pose silhouette
+    "shape": "deer" // silhouette shape
   }
 ]
 
 Shape values (pick the one that best matches the lyric's emotional/physical energy):
-- "standing"    — neutral, present, grounded
-- "running"     — urgency, movement, escape, pursuit
-- "falling"     — loss, surrender, despair, chaos
-- "curled"      — vulnerability, grief, inward, hiding
-- "reaching"    — longing, aspiration, connection, hope
-- "dispersed"   — dissolution, freedom, release, openness
-- "contracted"  — tension, fear, held breath, anticipation
+- "bird"        — freedom, flight, soaring, hope, escape
+- "butterfly"   — transformation, lightness, fragility, beauty
+- "deer"        — grace, stillness, alertness, nature, purity
+- "deer_run"    — urgency, speed, chasing, exhilaration
+- "cat"         — mystery, comfort, warmth, introspection
+- "rabbit"      — nervousness, quick emotion, tenderness, hiding
+- "fish"        — flowing, underwater depth, dreaming, silence
+- "tree"        — rootedness, growth, strength, solitude, calm
+- "flower"      — joy, bloom, love, opening, warmth
+- "lion"        — power, pride, presence, strength, stillness
+- "lion_run"    — intensity, pursuit, raw force, climax
+- "dolphin"     — joy, playfulness, freedom, euphoria, waves
 
 Rules:
 - Emotional/dark lines: low hue (200-280), low energy

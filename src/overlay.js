@@ -129,7 +129,7 @@ export class DataOverlay {
       }
 
       // Label
-      ctx.font      = '7px "SF Mono", "Courier New", monospace'
+      ctx.font      = '300 7px Georgia, "Times New Roman", serif'
       ctx.fillStyle = `rgba(${cr},${cg},${cb},${a * 0.7})`
       ctx.fillText(ring.label, ring.x + ring.r + 6, ring.y + 3)
     }
@@ -143,37 +143,13 @@ export class DataOverlay {
       ctx.beginPath(); ctx.moveTo(x+sx*blen,y); ctx.lineTo(x,y); ctx.lineTo(x,y+sy*blen); ctx.stroke()
     }
 
-    // ── Subtitle ─────────────────────────────────────────────────────────
-    if (this._subText) {
-      this._subTimer += delta
-      // Fade in over 0.25s, hold, fade out after 3.5s over 0.5s
-      const fadeIn  = Math.min(1, this._subTimer / 0.25)
-      const fadeOut = this._subTimer > 3.5 ? Math.max(0, 1 - (this._subTimer - 3.5) / 0.5) : 1
-      this._subAlpha = fadeIn * fadeOut
-      if (this._subTimer > 4.0) { this._subText = ''; this._subAlpha = 0 }
-
-      if (this._subAlpha > 0.01) {
-        const subY = h - 64
-        const a    = this._subAlpha
-        // Warm white, slightly cream
-        ctx.font      = `300 15px Georgia, "Times New Roman", serif`
-        ctx.textAlign = 'center'
-        // Subtle text shadow
-        ctx.shadowColor = 'rgba(0,0,0,0.7)'
-        ctx.shadowBlur  = 8
-        ctx.fillStyle = `rgba(255, 248, 220, ${a})`
-        ctx.fillText(this._subText, cx, subY)
-        ctx.shadowBlur = 0
-      }
-    }
-
     // ── Bottom HUD text ──────────────────────────────────────────────────
     const frame = String(Math.floor(this.time * 30)).padStart(6, '0')
     const code  = this._trackCode || 'SECTOR-00-0000'
-    ctx.font      = '9px "SF Mono", "Courier New", monospace'
-    ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.25 + overall * 0.15})`
+    ctx.font      = `300 10px Georgia, "Times New Roman", serif`
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.22 + overall * 0.12})`
     ctx.textAlign = 'center'
-    ctx.fillText(`${code}  ·  F:${frame}`, cx, h - 22)
+    ctx.fillText(`${code}  ·  ${frame}`, cx, h - 22)
     ctx.textAlign = 'left'
   }
 

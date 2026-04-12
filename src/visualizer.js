@@ -148,8 +148,9 @@ const glitchFrag = `
 // figure=true  → tight pose, no rotation, small particles (silhouette reads)
 // figure=false → additive glow, free rotation
 const LAYERS = [
-  { name:'rings',      count:500,  pose:null,       poseScale:1.0,  sizeRange:[0.2,0.7],  react:0.35, rotSpeed:0.10, ring:true,  instrument:'texture', figure:false, noiseScale:0.35 },
-  { name:'atmosphere', count:2200, pose:'dispersed',poseScale:3.2,  sizeRange:[0.25,0.9], react:0.08, rotSpeed:0.03, ring:false, instrument:'pad',     figure:false, noiseScale:0.35 },
+  { name:'figure',     count:6000, pose:'standing', poseScale:1.0,  sizeRange:[0.28,0.80], react:0.04, rotSpeed:0,    ring:false, instrument:'kick',    figure:true,  noiseScale:0.05 },
+  { name:'rings',      count:500,  pose:null,       poseScale:1.0,  sizeRange:[0.2,0.6],   react:0.35, rotSpeed:0.10, ring:true,  instrument:'texture', figure:false, noiseScale:0.35 },
+  { name:'atmosphere', count:1200, pose:'dispersed',poseScale:2.0,  sizeRange:[0.12,0.40], react:0.06, rotSpeed:0.02, ring:false, instrument:'pad',     figure:false, noiseScale:0.28 },
 ]
 
 // ── Pose generators ──────────────────────────────────────────────────────────
@@ -270,7 +271,20 @@ function buildLayer(cfg){
     uSpread:{value:0.5},uSpeed:{value:0.5},uMorph:{value:0},
     uNoiseScale:{value:noiseScale??0.35},
   }
-  const blending = figure ? THREE.NormalBlending : THREE.AdditiveBlending
+  // Always additive — figure uses additive too for thermal accumulation
+  const blending = THREE.AdditiveBlending
+
+  // Heat-based initial colors for figure layer
+  if (figure) {
+    for (let i = 0; i < count; i++) {
+      const px = pos[i*3], pz = pos[i*3+2]
+      const lateralDist = Math.sqrt(px*px + pz*pz)
+      const heat = Math.max(0, 1 - lateralDist * 2.2)
+      col[i*3]   = 0.70 + heat * 0.30  // R: warm at core
+      col[i*3+1] = 0.65 + heat * 0.35  // G
+      col[i*3+2] = 0.80 + heat * 0.20  // B: slightly cooler core
+    }
+  }
   const mat=new THREE.ShaderMaterial({
     vertexShader:particleVert,fragmentShader:particleFrag,uniforms,
     transparent:true,depthWrite:false,blending,
@@ -325,8 +339,9 @@ export class Visualizer {
     this.features={energy:0.5,valence:0.5,danceability:0.5,acousticness:0.5,tempo:120}
 
     this._layers=LAYERS.map(cfg=>{const l=buildLayer(cfg);this.scene.add(l.points);return l})
-    this._layers[0].points.rotation.x=Math.PI*0.18
-    this._layers[0].points.rotation.z=Math.PI*0.06
+    // figure layer [0]: no rotation — rings layer [1] gets tilt
+    this._layers[1].points.rotation.x=Math.PI*0.18
+    this._layers[1].points.rotation.z=Math.PI*0.06
 
     // Ghost text background
     this._ghostCanvas = document.createElement('canvas')
@@ -384,7 +399,7 @@ export class Visualizer {
   }
 
   setShape(poseName) {
-    this._layers.forEach(layer => {
+    this._layers.filter(l => l.cfg.figure).forEach(layer => {
       const newTargets = generatePose(poseName, layer.count)
       layer.targetAttr.array.set(newTargets)
       layer.targetAttr.needsUpdate = true
@@ -410,6 +425,7 @@ export class Visualizer {
     this.accentRGB = [Math.round(ar*255), Math.round(ag*255), Math.round(ab*255)]
 
     const palette = [
+      { hue: accentHue,        sat: 18,                    lb: 88, lv: 6  },  // figure: near-white
       { hue: accentHue,        sat: this._mood.sat * 0.9,  lb: 48, lv: 12 },
       { hue: this._mood.hue,   sat: this._mood.sat * 0.7,  lb: 18, lv: 10 },
     ]
@@ -488,8 +504,9 @@ export class Visualizer {
     this.accentRGB = [Math.round(ar*255), Math.round(ag*255), Math.round(ab*255)]
 
     const palette = [
-      {hue:accentHue, sat:sat*0.9, lb:48, lv:12},
-      {hue:mainHue,   sat:sat*0.7, lb:18, lv:10},
+      {hue:accentHue, sat:15,       lb:88, lv:5},   // figure: near-white
+      {hue:accentHue, sat:sat*0.9,  lb:48, lv:12},
+      {hue:mainHue,   sat:sat*0.7,  lb:18, lv:10},
     ]
     this._layers.forEach((layer, li) => {
       const {hue, sat:s, lb, lv} = palette[li]
@@ -515,6 +532,7 @@ export class Visualizer {
     this.accentRGB=[Math.round(ar*255),Math.round(ag*255),Math.round(ab*255)]
 
     const palette=[
+      {hue:accentHue, sat:15,      lb:88, lv:5},   // figure: near-white
       {hue:accentHue, sat:sat*0.9, lb:45, lv:12},
       {hue:mainHue,   sat:sat*0.7, lb:18, lv:10},
     ]
@@ -565,8 +583,8 @@ export class Visualizer {
     gu.uMid.value    =s.mid
     gu.uEnergy.value =this.features.energy
 
-    // Rotations
-    const [rings,atmo]=this._layers.map(l=>l.points)
+    // Rotations — figure layer never rotates
+    const [_fig,rings,atmo]=this._layers.map(l=>l.points)
     const tempo=this.features.tempo/120
     const sp = 0.5 + this._mood.speed * 1.0
     rings.rotation.y+=(0.001 +s.texture*0.003)*tempo*sp

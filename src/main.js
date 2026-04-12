@@ -7,7 +7,6 @@ import { Visualizer } from './visualizer.js'
 import { DataOverlay } from './overlay.js'
 import { LyricGraph } from './lyricGraph.js'
 import { FigureRenderer } from './figureRenderer.js'
-import { LandscapeRenderer } from './landscapeRenderer.js'
 
 const KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -181,11 +180,10 @@ function _startPositionPolling() {
 
 // ── Launch ──
 function launchVisualizer(audioSource) {
-  const visualizer  = new Visualizer(app)
-  const landscape   = new LandscapeRenderer(app)
-  const overlay     = new DataOverlay(app)
-  const lyricGraph  = new LyricGraph(app)
+  const visualizer     = new Visualizer(app)
   const figureRenderer = new FigureRenderer(app)
+  const overlay        = new DataOverlay(app)
+  const lyricGraph     = new LyricGraph(app)
 
   nowPlaying.style.display    = 'block'
   analysisToggle.style.display = 'flex'
@@ -202,6 +200,7 @@ function launchVisualizer(audioSource) {
     _lastLine = ''
     overlay.setTrack(track.name)
     lyricGraph.setTrack(track.name)
+    figureRenderer.setRandomShape()
 
     const lines = await getLyrics(track)
     console.log('[lyrics]', track.name, lines ? `${lines.length} lines` : 'not found')
@@ -213,6 +212,7 @@ function launchVisualizer(audioSource) {
       _lastLineIdx = -1
       visualizer.lyricsMode = true
       lyricGraph.setLines(lines)
+      figureRenderer.setWords(lines)
       // Analyze mood in background — no await, applies when ready
       analyzeLyrics(track.name, track.artists?.[0]?.name, lines).then(map => {
         if (map) { _moodMap = map; console.log('[mood] ready', Object.keys(map).length, 'lines') }
@@ -238,11 +238,9 @@ function launchVisualizer(audioSource) {
     visualizer.update(audioSource, delta)
     overlay.setColor(...visualizer.accentRGB)
     overlay.update(audioSource, delta)
-    landscape.update(audioSource, delta)
-    landscape.setColor(...visualizer.accentRGB)
-    lyricGraph.update(audioSource, delta)
-    figureRenderer.update(audioSource, delta)
     figureRenderer.setColor(...visualizer.accentRGB)
+    figureRenderer.update(audioSource, delta)
+    lyricGraph.update(audioSource, delta)
     updateMeters(audioSource)
 
     // Lyrics sync — extrapolate position between polls
@@ -256,8 +254,9 @@ function launchVisualizer(audioSource) {
         const mood = _moodMap?.[result.idx] ?? null
         visualizer.setLyricLine(result.words, mood)
         overlay.setSubtitle(result.words)
+        figureRenderer.setActiveLine(result.words)
         if (mood?.shape) figureRenderer.setShape(mood.shape)
-        if (mood) landscape.setMood(mood)
+
         lyricGraph.setActiveIndex(result.idx)
         lyricGraph.setColor(...visualizer.accentRGB)
       }

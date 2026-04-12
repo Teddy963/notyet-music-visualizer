@@ -256,7 +256,7 @@ export class LyricGraph {
       ctx.fill()
 
       const fz = Math.round(8 + freq * 8)
-      ctx.font = `300 ${fz}px "SF Mono", "Courier New", monospace`
+      ctx.font = `300 ${fz}px Georgia, "Times New Roman", serif`
       ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha * 0.95})`
       ctx.textAlign = 'left'
       ctx.fillText(node.display, node.x + dotR + 4, node.y + fz * 0.36)
@@ -298,7 +298,7 @@ export class LyricGraph {
       // Text — size scales with frequency + activation
       const fz = Math.min(28, Math.max(16, w / 46))
       const weight = bright > 0.5 ? '500' : '300'
-      ctx.font = `${weight} ${fz}px "SF Mono", "Courier New", monospace`
+      ctx.font = `${weight} ${fz}px Georgia, "Times New Roman", serif`
       ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha * 0.95})`
       ctx.textAlign = 'left'
       ctx.fillText(node.display, node.x + dotR + 4, node.y + fz * 0.36)
@@ -315,7 +315,7 @@ export class LyricGraph {
 
     // ── HUD ────────────────────────────────────────────────────────────
     const frame = String(Math.floor(this.time * 30)).padStart(6, '0')
-    ctx.font      = '9px "SF Mono","Courier New",monospace'
+    ctx.font      = '300 9px Georgia,"Times New Roman",serif'
     ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.22 + overall * 0.1})`
     ctx.textAlign = 'center'
     ctx.fillText(`${this._trackCode}  ·  F:${frame}`, cx, h - 22)
