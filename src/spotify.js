@@ -1,5 +1,12 @@
 const CLIENT_ID = '809ab25495f2458d9327cafde9974c09'
-const REDIRECT_URI = `${window.location.origin}/callback`
+
+const isLocal =
+  window.location.hostname === '127.0.0.1' ||
+  window.location.hostname === 'localhost'
+
+const REDIRECT_URI = isLocal
+  ? 'http://127.0.0.1:5173/callback'
+  : 'https://music.notyetoffice.com/callback'
 const SCOPES = [
   'user-read-currently-playing',
   'user-read-playback-state',
