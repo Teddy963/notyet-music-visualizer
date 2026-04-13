@@ -5,10 +5,18 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     proxy: {
-      '/anthropic': {
+      // Local dev: /api/mood → Anthropic (key injected server-side via vite proxy)
+      '/api/mood': {
         target: 'https://api.anthropic.com',
         changeOrigin: true,
-        rewrite: path => path.replace(/^\/anthropic/, ''),
+        rewrite: () => '/v1/messages',
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            const key = process.env.ANTHROPIC_KEY
+            if (key) proxyReq.setHeader('x-api-key', key)
+            proxyReq.removeHeader('x-user-api-key')
+          })
+        },
       },
     },
   },

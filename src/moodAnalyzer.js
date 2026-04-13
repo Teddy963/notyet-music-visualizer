@@ -1,9 +1,6 @@
-const API_KEY = import.meta.env.VITE_ANTHROPIC_KEY
-console.log('[mood] key loaded:', API_KEY ? API_KEY.slice(0,12) + '...' : 'MISSING')
-
 // Ask Claude to tag each lyric line with visual mood parameters
-export async function analyzeLyrics(trackName, artist, lines) {
-  if (!API_KEY || !lines?.length) return null
+export async function analyzeLyrics(trackName, artist, lines, userApiKey = null) {
+  if (!lines?.length) return null
 
   const lyricsText = lines.map((l, i) => `${i}|${l.words}`).join('\n')
 
@@ -23,7 +20,8 @@ Return a JSON array — one object per line in the same order:
     "energy": 0.6,     // visual intensity 0.0-1.0
     "spread": 0.5,     // particle spread/expansion 0.0-1.0 (0=contracted, 1=exploded)
     "speed": 0.5,      // motion speed 0.0-1.0
-    "shape": "deer" // silhouette shape
+    "shape": "deer",   // silhouette shape
+    "keywords": ["word1", "word2"]  // 1-3 most emotionally charged or visually evocative words. Keep in the ORIGINAL language (Korean → Korean, English → English). Skip function words (the/a/and/i/to / 은/는/이/가/을/를/의/에/도)
   }
 ]
 
@@ -50,17 +48,15 @@ Rules:
 - Return ONLY the JSON array, no explanation.`
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const headers = { 'content-type': 'application/json' }
+    if (userApiKey) headers['x-user-api-key'] = userApiKey
+
+    const res = await fetch('/api/mood', {
       method: 'POST',
-      headers: {
-        'x-api-key': API_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-        'content-type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 4096,
+        max_tokens: 8192,
         messages: [{ role: 'user', content: prompt }],
       }),
     })
@@ -69,10 +65,19 @@ Rules:
 
     const data = await res.json()
     const text = data.content?.[0]?.text ?? ''
-    const json = text.match(/\[[\s\S]*\]/)
+    const json = text.match(/\[[\s\S]*/)
     if (!json) return null
 
-    const tags = JSON.parse(json[0])
+    let tags
+    try {
+      // Try full parse first
+      const closed = json[0].match(/\[[\s\S]*\]/)
+      tags = JSON.parse(closed ? closed[0] : json[0])
+    } catch {
+      // Truncated — recover complete objects up to last '},'
+      const partial = json[0].replace(/,?\s*\{[^}]*$/, '') + ']'
+      try { tags = JSON.parse(partial) } catch { return null }
+    }
     // Map index → mood params
     const map = {}
     for (const t of tags) map[t.i] = t
