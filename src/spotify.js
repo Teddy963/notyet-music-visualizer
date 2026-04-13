@@ -1,5 +1,5 @@
 const CLIENT_ID = '809ab25495f2458d9327cafde9974c09'
-const REDIRECT_URI = 'http://127.0.0.1:5173/callback'
+const REDIRECT_URI = `${window.location.origin}/callback`
 const SCOPES = [
   'user-read-currently-playing',
   'user-read-playback-state',

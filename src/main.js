@@ -81,6 +81,7 @@ function showLogin() {
 
 // ── Spotify SDK mode ──
 async function startSpotifyMode() {
+  loginScreen.style.display = 'none'
   const statusEl = el('div', 'login-screen', `<h1>Notyet</h1><p>Connecting to Spotify...</p>`)
   app.appendChild(statusEl)
 
