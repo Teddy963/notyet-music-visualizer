@@ -1,7 +1,6 @@
 import './style.css'
 import { login, handleCallback, isLoggedIn, startPolling, initPlayer, transferPlayback, getLyrics, getPlaybackState } from './spotify.js'
 import { analyzeLyrics } from './moodAnalyzer.js'
-import { AudioAnalyzer } from './audio.js'
 import { AudioSync } from './audioSync.js'
 import { Visualizer } from './visualizer.js'
 import { DataOverlay } from './overlay.js'
@@ -18,14 +17,6 @@ const loginScreen = el('div', 'login-screen', `
   <button id="login-btn">Connect Spotify</button>
 `)
 loginScreen.id = 'login-screen'
-
-const audioSource = el('div', 'audio-source', `
-  <h2>Audio Source</h2>
-  <button class="source-btn" id="btn-spotify">Spotify App<small>Sync with Spotify playback (Premium required)</small></button>
-  <button class="source-btn" id="btn-system">System Audio<small>Share screen with audio</small></button>
-  <button class="source-btn" id="btn-mic">Microphone<small>Capture via mic</small></button>
-`)
-audioSource.id = 'audio-source'
 
 const nowPlaying = el('div', 'now-playing', `<div class="track"></div><div class="artist"></div>`)
 nowPlaying.id = 'now-playing'
@@ -62,7 +53,6 @@ const analysisPanel = el('div', null, `
 analysisPanel.id = 'analysis-panel'
 
 app.appendChild(loginScreen)
-app.appendChild(audioSource)
 app.appendChild(nowPlaying)
 app.appendChild(analysisToggle)
 app.appendChild(analysisPanel)
@@ -81,7 +71,7 @@ async function boot() {
     if (!ok) { showLogin(); return }
   }
   if (!isLoggedIn()) { showLogin(); return }
-  showAudioSourcePicker()
+  startSpotifyMode()
 }
 
 function showLogin() {
@@ -89,17 +79,8 @@ function showLogin() {
   document.getElementById('login-btn').addEventListener('click', login)
 }
 
-function showAudioSourcePicker() {
-  loginScreen.style.display = 'none'
-  audioSource.style.display = 'flex'
-  document.getElementById('btn-spotify').addEventListener('click', startSpotifyMode)
-  document.getElementById('btn-system').addEventListener('click', () => startAudioMode('system'))
-  document.getElementById('btn-mic').addEventListener('click',    () => startAudioMode('mic'))
-}
-
 // ── Spotify SDK mode ──
 async function startSpotifyMode() {
-  audioSource.style.display = 'none'
   const statusEl = el('div', 'login-screen', `<h1>Notyet</h1><p>Connecting to Spotify...</p>`)
   app.appendChild(statusEl)
 
@@ -109,13 +90,6 @@ async function startSpotifyMode() {
       () => {},
       (err) => {
         statusEl.querySelector('p').textContent = `Error: ${err}`
-        if (err.includes('account')) {
-          statusEl.innerHTML += `<p style="color:rgba(255,255,255,0.4);font-size:.75rem;margin-top:8px">Spotify Basic may not support Web Playback SDK.</p>`
-          const btn = document.createElement('button')
-          btn.id = 'login-btn'; btn.textContent = 'Use System Audio'
-          btn.addEventListener('click', () => { statusEl.remove(); showAudioSourcePicker() })
-          statusEl.appendChild(btn)
-        }
       }
     )
 
@@ -127,21 +101,6 @@ async function startSpotifyMode() {
   } catch (e) {
     if (app.contains(statusEl)) statusEl.querySelector('p').textContent = `Failed: ${e.message}`
   }
-}
-
-// ── Mic / System mode ──
-async function startAudioMode(sourceType) {
-  audioSource.style.display = 'none'
-  const analyzer = new AudioAnalyzer()
-  try {
-    if (sourceType === 'mic') await analyzer.startMic()
-    else await analyzer.startSystem()
-  } catch (e) {
-    alert(`Audio error: ${e.message}`)
-    showAudioSourcePicker()
-    return
-  }
-  launchVisualizer(analyzer)
 }
 
 // ── Lyrics state ──
@@ -184,13 +143,19 @@ function launchVisualizer(audioSource) {
   const figureRenderer = new FigureRenderer(app)
   const overlay        = new DataOverlay(app)
   const lyricGraph     = new LyricGraph(app)
+  lyricGraph.canvas.style.display = 'none'
 
   nowPlaying.style.display    = 'block'
   analysisToggle.style.display = 'flex'
 
   _startPositionPolling()
 
+  let _currentTrackId = null
+
   startPolling(async (track, features, analysis) => {
+    const trackId = track.id ?? track.name
+    _currentTrackId = trackId
+
     nowPlaying.querySelector('.track').textContent  = track.name
     nowPlaying.querySelector('.artist').textContent = track.artists.map(a => a.name).join(', ')
 
@@ -201,8 +166,12 @@ function launchVisualizer(audioSource) {
     overlay.setTrack(track.name)
     lyricGraph.setTrack(track.name)
     figureRenderer.setRandomShape()
+    figureRenderer.setAlbumArt(track.album?.images?.[0]?.url ?? null)
 
     const lines = await getLyrics(track)
+    // Guard: ignore if a newer track has already taken over
+    if (_currentTrackId !== trackId) return
+
     console.log('[lyrics]', track.name, lines ? `${lines.length} lines` : 'not found')
     _moodMap = null
     if (lines?.length) {
@@ -212,10 +181,15 @@ function launchVisualizer(audioSource) {
       _lastLineIdx = -1
       visualizer.lyricsMode = true
       lyricGraph.setLines(lines)
+      overlay.setLines(lines)
       figureRenderer.setWords(lines)
       // Analyze mood in background — no await, applies when ready
       analyzeLyrics(track.name, track.artists?.[0]?.name, lines).then(map => {
-        if (map) { _moodMap = map; console.log('[mood] ready', Object.keys(map).length, 'lines') }
+        if (map && _currentTrackId === trackId) {
+          _moodMap = map
+          console.log('[mood] ready', Object.keys(map).length, 'lines')
+          overlay.refineWithKeywords(map)
+        }
       })
     } else {
       visualizer.lyricsMode = false
@@ -253,9 +227,10 @@ function launchVisualizer(audioSource) {
         _lastLineIdx = result.idx
         const mood = _moodMap?.[result.idx] ?? null
         visualizer.setLyricLine(result.words, mood)
+        overlay.setLineMood(mood)
         overlay.setSubtitle(result.words)
         figureRenderer.setActiveLine(result.words)
-        if (mood?.shape) figureRenderer.setShape(mood.shape)
+        figureRenderer.setLineMood(mood)
 
         lyricGraph.setActiveIndex(result.idx)
         lyricGraph.setColor(...visualizer.accentRGB)
