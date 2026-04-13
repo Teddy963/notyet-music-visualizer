@@ -6,7 +6,7 @@ const isLocal =
 
 const REDIRECT_URI = isLocal
   ? 'http://127.0.0.1:5173/callback'
-  : 'https://music.notyetoffice.com/callback'
+  : 'https://notyet-music-visualizer.vercel.app/callback'
 const SCOPES = [
   'user-read-currently-playing',
   'user-read-playback-state',
