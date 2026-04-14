@@ -135,6 +135,7 @@ export class DataOverlay {
     this._accumActive  = false
     this._accumNodeX   = 0
     this._accumNodeY   = 0
+    this._accumNodeType = 'circle'  // 'circle' or 'box'
 
     // Beat effects
     this._pings      = []   // A: sonar rings  — driven by bass/kick
@@ -361,10 +362,11 @@ export class DataOverlay {
       const repeated = Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0]
       const node = repeated && this._nodes.find(n => n.word === repeated)
       if (node) {
-        this._accumNodeX  = node.x
-        this._accumNodeY  = node.y
-        this._accumActive = true
-        this._accumTimer  = 0
+        this._accumNodeX    = node.x
+        this._accumNodeY    = node.y
+        this._accumNodeType = node.type || 'circle'
+        this._accumActive   = true
+        this._accumTimer    = 0
       }
     }
     if (factor === 0 && this._accumActive) {
@@ -816,6 +818,7 @@ export class DataOverlay {
           x: this._accumNodeX, y: this._accumNodeY,
           r: 8, target: 24 + count * 38,
           alpha: 0.65, fading: false,
+          shape: this._accumNodeType,
         })
       }
     }
@@ -829,11 +832,16 @@ export class DataOverlay {
         c.r = Math.min(c.target, c.r + delta * 80)
       }
       if (c.alpha <= 0) continue
-      ctx.beginPath()
-      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2)
       ctx.strokeStyle = `rgba(${cr},${cg},${cb},${c.alpha * 0.8})`
       ctx.lineWidth   = 1.2
-      ctx.stroke()
+      if (c.shape === 'box') {
+        const s = c.r * 1.8
+        ctx.strokeRect(c.x - s * 0.5, c.y - s * 0.5, s, s)
+      } else {
+        ctx.beginPath()
+        ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2)
+        ctx.stroke()
+      }
     }
 
     // ── Mood color chips — right-side vertical timeline (bottom→top) ────
