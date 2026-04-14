@@ -139,6 +139,11 @@ export class DataOverlay {
     this._accumNodeY   = 0
     this._accumNodeType = 'circle'  // 'circle' or 'box'
 
+    // Cross-line continuity rings — word appears in both prev and current line
+    this._prevLineTokens = new Set()
+    this._lastLineWords  = null
+    this._conShape       = 'circle'  // updated from mood
+
     // String / sustained-instrument wave lines
     this._stringPresence  = 0   // smoothed 0-1
     this._stringDots      = [] // traversing melody dots
@@ -366,6 +371,13 @@ export class DataOverlay {
     } else {
       this._moodColor = false  // fall back to visualizer accent
     }
+    // Shape from mood: warm/high-energy → circle, cool/low-energy → box
+    if (mood?.energy != null || mood?.hue != null) {
+      const e = mood.energy ?? 0.5
+      const h = mood.hue ?? 200
+      const warm = (h <= 60 || h >= 300)
+      this._conShape = (e >= 0.55 || warm) ? 'circle' : 'box'
+    }
   }
 
   setSubtitle(text) { this._lastActiveWords = text; this.setActiveLine(text) }
@@ -415,6 +427,30 @@ export class DataOverlay {
       lineTokens = tokenize(words)
     }
     const tokenSet = new Set(lineTokens)
+
+    // Cross-line continuity: detect words shared with previous line → spawn beat-driven rings
+    if (words !== this._lastLineWords) {
+      for (const t of lineTokens) {
+        if (this._prevLineTokens.has(t)) {
+          const node = this._nodes.find(n => n.word === t || n.parts.includes(t))
+          if (node) {
+            for (let i = 0; i < 3; i++) {
+              this._accumCircles.push({
+                x: node.x, y: node.y,
+                r: node.size ?? 6,
+                alpha: 0.75 - i * 0.18,
+                delay: i * 0.22,
+                beatDriven: true,
+                shape: this._conShape,
+                fading: false,
+              })
+            }
+          }
+        }
+      }
+      this._prevLineTokens = new Set(lineTokens)
+      this._lastLineWords  = words
+    }
     // Count repetitions per token (e.g. "love love love" → {love: 3})
     const repeatCount = {}
     for (const t of lineTokens) repeatCount[t] = (repeatCount[t] || 0) + 1
@@ -843,7 +879,13 @@ export class DataOverlay {
     // Draw + animate accumulation circles
     this._accumCircles = this._accumCircles.filter(c => c.alpha > 0)
     for (const c of this._accumCircles) {
-      if (c.fading) {
+      if (c.delay > 0) { c.delay -= delta; continue }
+      if (c.beatDriven) {
+        // Beat-driven: expansion speed pulses with kick
+        const spd = 42 + (audio.kick ?? 0) * 130
+        c.r += delta * spd
+        c.alpha = Math.max(0, c.alpha - delta * (0.18 + c.r * 0.0025))
+      } else if (c.fading) {
         c.alpha -= delta * 2.5
         c.r     += delta * 200
       } else {

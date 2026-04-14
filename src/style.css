@@ -85,12 +85,12 @@ canvas { display: block; position: fixed; inset: 0; opacity: 0.55; mix-blend-mod
 #capture-btn {
   position: fixed; bottom: 28px; right: 72px;
   width: 32px; height: 32px;
-  border: 1px solid rgba(255,255,255,0.2); background: transparent;
+  border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.35);
   color: rgba(255,255,255,0.4); font-size: 0.65rem; letter-spacing: 0.05em;
   cursor: pointer; transition: all 0.2s; display: none;
   align-items: center; justify-content: center;
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
-  z-index: 20;
+  z-index: 20; backdrop-filter: blur(4px);
 }
 #capture-btn:hover { border-color: rgba(255,255,255,0.5); color: rgba(255,255,255,0.8); }
 #capture-btn.flash { border-color: rgba(255,255,255,0.8); color: rgba(255,255,255,1); }
@@ -99,12 +99,12 @@ canvas { display: block; position: fixed; inset: 0; opacity: 0.55; mix-blend-mod
 #analysis-toggle {
   position: fixed; bottom: 28px; right: 28px;
   width: 32px; height: 32px;
-  border: 1px solid rgba(255,255,255,0.2); background: transparent;
+  border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.35);
   color: rgba(255,255,255,0.4); font-size: 0.65rem; letter-spacing: 0.05em;
   cursor: pointer; transition: all 0.2s; display: none;
   align-items: center; justify-content: center;
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
-  z-index: 20;
+  z-index: 20; backdrop-filter: blur(4px);
 }
 #analysis-toggle:hover { border-color: rgba(255,255,255,0.5); color: rgba(255,255,255,0.8); }
 #analysis-toggle.active { border-color: rgba(255,255,255,0.5); color: rgba(255,255,255,0.8); }
