@@ -57,9 +57,15 @@ const CONNECTOR_WORDS = new Set([
 function tokenize(text) {
   return text.split(/\s+/).map(raw => {
     const isKorean = /[가-힣]/.test(raw)
+    // Hyphen buildup rule: "pin-pin-pin-pinky" → use last segment only
+    let processRaw = raw
+    if (!isKorean && raw.includes('-')) {
+      const parts = raw.split('-').map(p => p.replace(/[^a-zA-Z']/g, '')).filter(p => p.length >= 1)
+      if (parts.length >= 2) processRaw = parts[parts.length - 1]
+    }
     let cleaned = isKorean
       ? stripKoParticle(raw.replace(/[^가-힣]/g, ''))
-      : raw.replace(/[^a-zA-Z']/g, '').toLowerCase()
+      : processRaw.replace(/[^a-zA-Z']/g, '').toLowerCase()
     if (cleaned.length < 1) return null
     // Allow single-char: known connectors (e.g. "i") OR original uppercase letter (e.g. "D", "E")
     if (cleaned.length < 2 && !CONNECTOR_WORDS.has(cleaned)) {
@@ -177,6 +183,17 @@ export class DataOverlay {
     const w = this.canvas.width, h = this.canvas.height
     const pad = 60
 
+    // Collect hyphen buildup targets (pin-pin-pin-pinky → "pinky" gets boost)
+    const buildupWords = new Set()
+    for (const line of lines) {
+      for (const raw of line.words.split(/\s+/)) {
+        if (raw.includes('-')) {
+          const parts = raw.split('-').map(p => p.replace(/[^a-zA-Z']/g, '').toLowerCase()).filter(p => p.length >= 2)
+          if (parts.length >= 2) buildupWords.add(parts[parts.length - 1])
+        }
+      }
+    }
+
     // Count all unique content words
     const freq = {}
     for (const line of lines) {
@@ -197,7 +214,8 @@ export class DataOverlay {
       const isConnector = CONNECTOR_WORDS.has(word)
       const isAttach    = ATTACH_WORDS.has(word)
       const isTitle     = titleWords.has(word)
-      const isCore      = isTitle || (!isConnector && !isAttach && count >= coreThr)
+      const isBuildup   = buildupWords.has(word)
+      const isCore      = isTitle || isBuildup || (!isConnector && !isAttach && count >= coreThr)
       const type        = (isConnector || isAttach) ? 'circle' : (h3 > 0.45 ? 'circle' : 'box')
       const freqScale   = (isConnector || isAttach) ? 0 : Math.log2(count + 1) / Math.log2(maxFreq + 1)
       const baseSize    = isAttach ? 4 + h4 * 3
@@ -205,10 +223,11 @@ export class DataOverlay {
                         : 8 + h4 * 10
       const freqBoost   = freqScale * 36
       const titleBoost  = isTitle ? 18 + (count / maxFreq) * 20 : 0
+      const buildupBoost = isBuildup ? 22 : 0
       return {
         word, parts: [word], display: word.toUpperCase(),
         x: pad + h1 * (w - pad * 2), y: pad + h2 * (h - pad * 2),
-        type, size: baseSize + freqBoost + titleBoost,
+        type, size: baseSize + freqBoost + titleBoost + buildupBoost,
         rot: (h3 - 0.5) * 0.6, freq: count,
         isCore, isBigram: false, isConnector, isAttach, isTitle,
         state: 'dormant', alpha: isTitle ? 0.3 : 0, activeTimer: 0,

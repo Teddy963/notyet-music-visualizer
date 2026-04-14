@@ -171,10 +171,13 @@ function launchVisualizer(audioSource) {
     nowPlaying.querySelector('.track').textContent  = track.name
     nowPlaying.querySelector('.artist').textContent = track.artists.map(a => a.name).join(', ')
 
-    // Fetch lyrics for new track
+    // Clear previous song state
     _lyrics = null
     _lyricsActive = false
     _lastLine = ''
+    overlay.setSubtitle('')
+    figureRenderer.setActiveLine('')
+    visualizer.clearAccumRings()
     overlay.setTrack(track.name)
     lyricGraph.setTrack(track.name)
     figureRenderer.setRandomShape()
@@ -238,8 +241,9 @@ function launchVisualizer(audioSource) {
         _lastLine = result.words
         _lastLineIdx = result.idx
         const mood = _moodMap?.[result.idx] ?? null
+        const repeatFactor = detectRepeatFactor(result.words)
         visualizer.setLyricLine(result.words, mood)
-        visualizer.setRepeat(detectRepeatFactor(result.words))
+        visualizer.setRepeat(repeatFactor)
         overlay.setLineMood(mood)
         overlay.setSubtitle(result.words)
         figureRenderer.setActiveLine(result.words)
