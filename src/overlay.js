@@ -849,18 +849,18 @@ export class DataOverlay {
     }
 
     // ── String / sustained wave lines — fade in when pad+texture present ──
-    const stringSignal = (s.pad ?? 0) * 0.65 + (s.texture ?? 0) * 0.35
+    const stringSignal = (audio.pad ?? 0) * 0.65 + (audio.texture ?? 0) * 0.35
     const stringTarget = stringSignal > 0.28 ? Math.min(1, (stringSignal - 0.28) * 3.5) : 0
     const presSpd = stringTarget > this._stringPresence ? 1.8 : 0.7
     this._stringPresence += (stringTarget - this._stringPresence) * Math.min(1, delta * presSpd)
-    this._stringPhase += delta * (0.9 + (s.melody ?? 0) * 0.6)
+    this._stringPhase += delta * (0.9 + (audio.melody ?? 0) * 0.6)
 
     if (this._stringPresence > 0.01) {
       const pres = this._stringPresence
       // Two waves at different vertical positions, phases, and frequencies
       const waves = [
-        { cy: h * 0.38, freq: 0.010, amp: 18 + (s.texture ?? 0) * 14, phaseOff: 0,    spd: 1.0, alpha: 0.22 },
-        { cy: h * 0.62, freq: 0.007, amp: 24 + (s.pad     ?? 0) * 18, phaseOff: 2.1,  spd: 0.6, alpha: 0.14 },
+        { cy: h * 0.38, freq: 0.010, amp: 18 + (audio.texture ?? 0) * 14, phaseOff: 0,    spd: 1.0, alpha: 0.22 },
+        { cy: h * 0.62, freq: 0.007, amp: 24 + (audio.pad     ?? 0) * 18, phaseOff: 2.1,  spd: 0.6, alpha: 0.14 },
       ]
       ctx.save()
       for (const wv of waves) {
