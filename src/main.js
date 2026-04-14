@@ -78,10 +78,13 @@ app.appendChild(analysisPanel)
 
 // ── Map toggle ──
 let overlayRef = null
-mapToggle.addEventListener('click', () => {
-  const open = mapToggle.classList.toggle('active')
-  lyricGraphRef?.setVisible(open)
-  overlayRef?.setMapPinned(open)
+mapToggle.addEventListener('mouseenter', () => {
+  mapToggle.classList.add('active')
+  overlayRef?.setMapPinned(true)
+})
+mapToggle.addEventListener('mouseleave', () => {
+  mapToggle.classList.remove('active')
+  overlayRef?.setMapPinned(false)
 })
 
 // ── Capture button ──
@@ -188,8 +191,7 @@ function launchVisualizer(audioSource) {
   const overlay        = new DataOverlay(app)
   const lyricGraph     = new LyricGraph(app)
   lyricGraph.canvas.style.display = 'none'
-  lyricGraphRef = lyricGraph
-  overlayRef    = overlay
+  overlayRef = overlay
 
   nowPlaying.style.display     = 'block'
   mapToggle.style.display      = 'flex'
