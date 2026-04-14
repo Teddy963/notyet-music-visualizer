@@ -81,6 +81,20 @@ canvas { display: block; position: fixed; inset: 0; opacity: 0.55; mix-blend-mod
 }
 #now-playing .skip-btn:hover { color: rgba(255,255,255,0.85); }
 
+/* ── Capture button ── */
+#capture-btn {
+  position: fixed; bottom: 28px; right: 72px;
+  width: 32px; height: 32px;
+  border: 1px solid rgba(255,255,255,0.2); background: transparent;
+  color: rgba(255,255,255,0.4); font-size: 0.65rem; letter-spacing: 0.05em;
+  cursor: pointer; transition: all 0.2s; display: none;
+  align-items: center; justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  z-index: 20;
+}
+#capture-btn:hover { border-color: rgba(255,255,255,0.5); color: rgba(255,255,255,0.8); }
+#capture-btn.flash { border-color: rgba(255,255,255,0.8); color: rgba(255,255,255,1); }
+
 /* ── Analysis toggle button ── */
 #analysis-toggle {
   position: fixed; bottom: 28px; right: 28px;

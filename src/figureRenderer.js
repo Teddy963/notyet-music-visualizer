@@ -76,11 +76,8 @@ export class FigureRenderer {
 
   // ── Public API ───────────────────────────────────────────────────────────────
   setColor(r, g, b)       { this.r = r; this.g = g; this.b = b }
-  setRandomShape()        {}
-  setShape()              {}
   setWords()              {}
   setActiveLine(words)    { this._lyric = words || '' }
-  setLineMood()           {}
 
   setAlbumArt(url) {
     this._artData  = null

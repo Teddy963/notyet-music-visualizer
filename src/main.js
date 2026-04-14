@@ -30,6 +30,10 @@ const nowPlaying = el('div', 'now-playing', `
 `)
 nowPlaying.id = 'now-playing'
 
+const captureBtn = el('button', 'capture-btn', '⬡')
+captureBtn.id = 'capture-btn'
+captureBtn.title = 'Capture (⌘S)'
+
 const analysisToggle = el('button', 'analysis-toggle', '◈')
 analysisToggle.id = 'analysis-toggle'
 analysisToggle.title = 'Analysis'
@@ -63,8 +67,12 @@ analysisPanel.id = 'analysis-panel'
 
 app.appendChild(loginScreen)
 app.appendChild(nowPlaying)
+app.appendChild(captureBtn)
 app.appendChild(analysisToggle)
 app.appendChild(analysisPanel)
+
+// ── Capture button ──
+captureBtn.addEventListener('click', captureVisuals)
 
 // ── Toggle ──
 analysisToggle.addEventListener('click', () => {
@@ -167,6 +175,7 @@ function launchVisualizer(audioSource) {
   lyricGraph.canvas.style.display = 'none'
 
   nowPlaying.style.display    = 'block'
+  captureBtn.style.display    = 'flex'
   analysisToggle.style.display = 'flex'
 
   document.getElementById('skip-prev').addEventListener('click', skipToPrevious)
@@ -192,7 +201,6 @@ function launchVisualizer(audioSource) {
     overlay.clearAccumRings()
     overlay.setTrack(track.name)
     lyricGraph.setTrack(track.name)
-    figureRenderer.setRandomShape()
     figureRenderer.setAlbumArt(track.album?.images?.[0]?.url ?? null)
 
     const lines = await getLyrics(track)
@@ -259,7 +267,7 @@ function launchVisualizer(audioSource) {
         overlay.setLineMood(mood)
         overlay.setSubtitle(result.words)
         figureRenderer.setActiveLine(result.words)
-        figureRenderer.setLineMood(mood)
+
 
         lyricGraph.setActiveIndex(result.idx)
         lyricGraph.setColor(...visualizer.accentRGB)
@@ -328,11 +336,36 @@ function infoHTML(id, label, defaultVal) {
     </div>`
 }
 
+// ── Capture ──
+function captureVisuals() {
+  captureBtn.classList.add('flash')
+  setTimeout(() => captureBtn.classList.remove('flash'), 300)
+  const canvases = [...document.querySelectorAll('canvas')]
+    .filter(c => c.style.display !== 'none' && c.width > 0 && c.height > 0)
+  if (!canvases.length) return
+
+  const out = document.createElement('canvas')
+  out.width  = window.innerWidth
+  out.height = window.innerHeight
+  const ctx = out.getContext('2d')
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, out.width, out.height)
+  for (const c of canvases) {
+    try { ctx.drawImage(c, 0, 0, out.width, out.height) } catch {}
+  }
+
+  const a = document.createElement('a')
+  a.download = `notyet-${Date.now()}.png`
+  a.href = out.toDataURL('image/png')
+  a.click()
+}
+
 // ── Keyboard shortcuts ──
 document.addEventListener('keydown', e => {
   if (!isLoggedIn()) return
   if (e.key === 'ArrowRight') { e.preventDefault(); skipToNext() }
   if (e.key === 'ArrowLeft')  { e.preventDefault(); skipToPrevious() }
+  if (e.key === 's' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); captureVisuals() }
 })
 
 boot()

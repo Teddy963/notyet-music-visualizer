@@ -150,84 +150,20 @@ const glitchFrag = `
   }
 `
 
-// ── Layer config ─────────────────────────────────────────────────────────────
-// figure=true  → tight pose, no rotation, small particles (silhouette reads)
-// figure=false → additive glow, free rotation
+// ── Layer config ──────────────────────────────────────────────────────────────
 const LAYERS = [
-  { name:'atmosphere', count:1800, pose:'dispersed',poseScale:5.5,  sizeRange:[0.06,0.20], react:0.75, rotSpeed:0.005,ring:false, instrument:'pad',     figure:false, noiseScale:0.28, alphaMult:0.65 },
-  { name:'scatter',    count:500,  pose:'dispersed',poseScale:8.0,  sizeRange:[0.04,0.14], react:1.10, rotSpeed:0.01, ring:false, instrument:'texture', figure:false, noiseScale:0.38, alphaMult:0.50 },
+  { name:'atmosphere', count:1800, sizeRange:[0.06,0.20], react:0.75, rotSpeed:0.005, instrument:'pad',     noiseScale:0.28, alphaMult:0.65 },
+  { name:'scatter',    count:500,  sizeRange:[0.04,0.14], react:1.10, rotSpeed:0.01,  instrument:'texture', noiseScale:0.38, alphaMult:0.50 },
 ]
 
-// ── Pose generators ──────────────────────────────────────────────────────────
-function randSphere(r){ const th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1);return[r*Math.sin(ph)*Math.cos(th),r*Math.sin(ph)*Math.sin(th),r*Math.cos(ph)] }
-function randEllipsoid(rx,ry,rz){ const [x,y,z]=randSphere(1);return[x*rx,y*ry,z*rz] }
-function randCylinder(r,h){ const a=Math.random()*Math.PI*2,t=(Math.random()-.5)*h;return[r*Math.cos(a),t,r*Math.sin(a)] }
-
-function generatePose(name, count) {
+// ── Initial position generator ────────────────────────────────────────────────
+function generateDispersed(count) {
   const pts = new Float32Array(count * 3)
-  const w = (x,y,z,i)=>{ pts[i*3]=x; pts[i*3+1]=y; pts[i*3+2]=z }
-
   for (let i = 0; i < count; i++) {
-    let p
-    const t = i / count
-
-    if (name === 'standing') {
-      // Head 8%, torso 35%, arms 20%, legs 37%
-      if (t < 0.08)      { p = randSphere(0.22); p[1] += 1.35 }
-      else if (t < 0.43) { p = randEllipsoid(0.22, 0.45, 0.18); p[1] += 0.7 }
-      else if (t < 0.63) {
-        const side = t < 0.53 ? -1 : 1
-        p = randEllipsoid(0.35, 0.1, 0.1)
-        p[0] = p[0] * 0.5 + side * 0.38; p[1] += 0.75
-      }
-      else {
-        const side = t < 0.815 ? -1 : 1
-        p = randEllipsoid(0.1, 0.48, 0.1)
-        p[0] += side * 0.12; p[1] -= 0.25
-      }
-    }
-    else if (name === 'running') {
-      if (t < 0.08)      { p = randSphere(0.22); p[1] += 1.35; p[0] -= 0.1 }
-      else if (t < 0.43) { p = randEllipsoid(0.22, 0.42, 0.18); p[1] += 0.68; p[0] -= 0.08 }
-      else if (t < 0.53) { p = randEllipsoid(0.3,0.1,0.1); p[0] -= 0.5; p[1] += 1.0 }   // front arm
-      else if (t < 0.63) { p = randEllipsoid(0.3,0.1,0.1); p[0] += 0.45; p[1] += 0.45 }  // back arm
-      else if (t < 0.815){ p = randEllipsoid(0.1,0.45,0.1); p[0] += 0.15; p[1] -= 0.15; p[2] += 0.2 } // front leg
-      else               { p = randEllipsoid(0.1,0.42,0.1); p[0] -= 0.12; p[1] -= 0.35; p[2] -= 0.25 } // back leg
-    }
-    else if (name === 'falling') {
-      if (t < 0.08)      { p = randSphere(0.22); p[1] += 0.5; p[0] -= 0.8 }
-      else if (t < 0.43) { p = randEllipsoid(0.45, 0.22, 0.18); p[0] -= 0.2; p[1] += 0.1 }
-      else if (t < 0.63) { p = randEllipsoid(0.4,0.1,0.1); p[1] += (t<0.53 ? 0.35 : -0.1); p[0] += (t<0.53 ? 0.3 : -0.6) }
-      else               { p = randEllipsoid(0.1,0.48,0.1); p[0] += (t<0.815 ? 0.5 : -0.1); p[1] -= 0.5 }
-    }
-    else if (name === 'curled') {
-      if (t < 0.1)       { p = randSphere(0.22); p[1] += 0.3; p[0] -= 0.3; p[2] += 0.15 }
-      else if (t < 0.5)  { p = randEllipsoid(0.28, 0.28, 0.22); p[1] -= 0.1 }
-      else               { p = randEllipsoid(0.12, 0.35, 0.12); const a=(t-.5)*Math.PI*2.5; p[0]=Math.cos(a)*0.4; p[1]=Math.sin(a)*0.3-.2; p[2]=0.1 }
-    }
-    else if (name === 'reaching') {
-      if (t < 0.08)      { p = randSphere(0.22); p[1] += 1.5 }
-      else if (t < 0.43) { p = randEllipsoid(0.22, 0.45, 0.18); p[1] += 0.75 }
-      else if (t < 0.63) { p = randEllipsoid(0.1, 0.5, 0.1); p[0] += (t<0.53 ? -0.35 : 0.35); p[1] += 1.25 }
-      else               { const s=t<0.815?-1:1; p=randEllipsoid(0.1,0.48,0.1); p[0]+=s*0.12; p[1]-=0.25 }
-    }
-    else if (name === 'dispersed') {
-      // Flat random spread across full screen — no limb-brightening ring
-      const z = (Math.random() - 0.5) * 4.0
-      p = [
-        (Math.random() - 0.5) * 12.0,
-        (Math.random() - 0.5) * 7.0,
-        z,
-      ]
-    }
-    else if (name === 'contracted') {
-      p = randSphere(0.5 + Math.random() * 0.3)
-    }
-    else { // default sphere
-      p = randSphere(0.5 + Math.random() * 1.2)
-    }
-
-    w(p[0], p[1], p[2], i)
+    const z = (Math.random() - 0.5) * 4.0
+    pts[i*3]   = (Math.random() - 0.5) * 12.0
+    pts[i*3+1] = (Math.random() - 0.5) * 7.0
+    pts[i*3+2] = z
   }
   return pts
 }
@@ -240,26 +176,13 @@ function hsl(h,s,l){
 }
 
 function buildLayer(cfg){
-  const {count,pose,poseScale,sizeRange,react,rotSpeed,ring,figure,noiseScale}=cfg
+  const {count,sizeRange,react,rotSpeed,noiseScale}=cfg
   const pos=new Float32Array(count*3),col=new Float32Array(count*3)
   const sz=new Float32Array(count),off=new Float32Array(count),rad=new Float32Array(count)
-  const tgt=new Float32Array(count*3)
 
-  // Initial positions: pose-based or ring/sphere fallback
-  if(pose){
-    const pts=generatePose(pose,count)
-    for(let i=0;i<count;i++){
-      pos[i*3]  =pts[i*3]  *poseScale
-      pos[i*3+1]=pts[i*3+1]*poseScale
-      pos[i*3+2]=pts[i*3+2]*poseScale
-    }
-  } else {
-    for(let i=0;i<count;i++){
-      const theta=Math.random()*Math.PI*2
-      const r=2.0+Math.random()*1.2
-      if(ring){pos[i*3]=r*Math.cos(theta);pos[i*3+1]=(Math.random()-.5)*.2;pos[i*3+2]=r*Math.sin(theta)}
-      else{const phi=Math.acos(2*Math.random()-1);pos[i*3]=r*Math.sin(phi)*Math.cos(theta);pos[i*3+1]=r*Math.sin(phi)*Math.sin(theta);pos[i*3+2]=r*Math.cos(phi)}
-    }
+  const pts=generateDispersed(count)
+  for(let i=0;i<count;i++){
+    pos[i*3]=pts[i*3];pos[i*3+1]=pts[i*3+1];pos[i*3+2]=pts[i*3+2]
   }
 
   for(let i=0;i<count;i++){
@@ -271,7 +194,6 @@ function buildLayer(cfg){
   }
   const geo=new THREE.BufferGeometry()
   geo.setAttribute('position',new THREE.BufferAttribute(pos,3))
-  geo.setAttribute('aTarget', new THREE.BufferAttribute(tgt,3))
   geo.setAttribute('aColor',  new THREE.BufferAttribute(col,3))
   geo.setAttribute('aSize',   new THREE.BufferAttribute(sz,1))
   geo.setAttribute('aOffset', new THREE.BufferAttribute(off,1))
@@ -284,33 +206,18 @@ function buildLayer(cfg){
     uNoiseScale:{value:noiseScale??0.35},
     uAlphaMult:{value:cfg.alphaMult??1.0},
   }
-  // Always additive — figure uses additive too for thermal accumulation
-  const blending = THREE.AdditiveBlending
-
-  // Heat-based initial colors for figure layer
-  if (figure) {
-    for (let i = 0; i < count; i++) {
-      const px = pos[i*3], pz = pos[i*3+2]
-      const lateralDist = Math.sqrt(px*px + pz*pz)
-      const heat = Math.max(0, 1 - lateralDist * 2.2)
-      col[i*3]   = 0.70 + heat * 0.30  // R: warm at core
-      col[i*3+1] = 0.65 + heat * 0.35  // G
-      col[i*3+2] = 0.80 + heat * 0.20  // B: slightly cooler core
-    }
-  }
   const mat=new THREE.ShaderMaterial({
     vertexShader:particleVert,fragmentShader:particleFrag,uniforms,
-    transparent:true,depthWrite:false,blending,
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
   })
-  const pts = new THREE.Points(geo,mat)
-  pts.renderOrder = figure ? 1 : 0
-  return{cfg,points:pts,uniforms,colorAttr:geo.getAttribute('aColor'),targetAttr:geo.getAttribute('aTarget'),count}
+  const points = new THREE.Points(geo,mat)
+  return{cfg,points,uniforms,colorAttr:geo.getAttribute('aColor'),count}
 }
 
 // ── Visualizer ───────────────────────────────────────────────────────────────
 export class Visualizer {
   constructor(container){
-    this.renderer=new THREE.WebGLRenderer({antialias:true,alpha:true})
+    this.renderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true})
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio,2))
     this.renderer.setSize(window.innerWidth,window.innerHeight)
     this.renderer.setClearColor(0x000000,0)
@@ -354,7 +261,6 @@ export class Visualizer {
     this.features={energy:0.5,valence:0.5,danceability:0.5,acousticness:0.5,tempo:120}
 
     this._layers=LAYERS.map(cfg=>{const l=buildLayer(cfg);this.scene.add(l.points);return l})
-    // figure layer [0]: no rotation — rings layer [1] gets tilt
     this._layers[1].points.rotation.x=Math.PI*0.18
     this._layers[1].points.rotation.z=Math.PI*0.06
 
@@ -382,10 +288,6 @@ export class Visualizer {
     this._mood = { hue: 200, sat: 65, energy: 0.5, spread: 0.5, speed: 0.5 }
     this._moodTarget = null
     this._moodLerp = 0
-    // Pose morphing state
-    this._morphStart = undefined
-    this._morphDuration = 1.5
-    this._morphHold = 4.0
     // Expose accent color for overlay
     this.accentRGB=[220,255,80]
 
@@ -411,22 +313,12 @@ export class Visualizer {
     if (moodParams) {
       this._moodTarget = moodParams
       this._moodLerp = 0
-      if (moodParams.shape) this.setShape(moodParams.shape)
     }
   }
 
-  // factor 0-1: how much the line repeats. Spawns accumulation rings.
+  // factor 0-1: how much the line repeats.
   setRepeat(factor) { this._repeatActive = factor > 0 }
   clearAccumRings() {}
-
-  setShape(poseName) {
-    this._layers.filter(l => l.cfg.figure).forEach(layer => {
-      const newTargets = generatePose(poseName, layer.count)
-      layer.targetAttr.array.set(newTargets)
-      layer.targetAttr.needsUpdate = true
-    })
-    this._morphStart = this.time
-  }
 
   _tickMood(delta) {
     if (!this._moodTarget) return
@@ -649,23 +541,6 @@ export class Visualizer {
     // Mood transition tick
     if (this._moodTarget) this._tickMood(delta)
     else if (!this._spotifyFeatures) this._autoColorFromAudio(audio)
-
-    // Pose morph animation
-    if (this._morphStart !== undefined) {
-      const elapsed = this.time - this._morphStart
-      let morphVal
-      if (elapsed < this._morphDuration) {
-        const t = elapsed / this._morphDuration
-        morphVal = t * t * (3 - 2 * t)  // smoothstep ease
-      } else if (elapsed < this._morphDuration + this._morphHold) {
-        morphVal = 1.0
-      } else {
-        const t = (elapsed - this._morphDuration - this._morphHold) / this._morphDuration
-        morphVal = Math.max(0, 1.0 - t * t * (3 - 2 * t))
-        if (morphVal <= 0) this._morphStart = undefined
-      }
-      this._layers.forEach(({uniforms}) => { uniforms.uMorph.value = morphVal ?? 0 })
-    }
 
     // 1. Render particles → render target
     this.renderer.setRenderTarget(this._rt)

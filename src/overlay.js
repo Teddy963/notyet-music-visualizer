@@ -97,8 +97,10 @@ function hslToRgb(h, s, l) {
 
 // Stable deterministic hash → [0, 1)
 function wordHash(word, salt = 0) {
-  let h = salt
+  let h = salt * 0x9e3779b9
   for (let i = 0; i < word.length; i++) h = (h * 31 + word.charCodeAt(i)) & 0xffffff
+  // Extra mixing pass to spread short-word clusters
+  h = ((h ^ (h >>> 13)) * 0x85ebca6b) & 0xffffff
   return h / 0xffffff
 }
 
