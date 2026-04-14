@@ -290,10 +290,13 @@ export class Visualizer {
     this._moodLerp = 0
     // Expose accent color for overlay
     this.accentRGB=[220,255,80]
+    this._inverted = false
 
     this._onResize=this._onResize.bind(this)
     window.addEventListener('resize',this._onResize)
   }
+
+  setInvert(v) { this._inverted = v }
 
   setFeatures(features){
     if (!features) return
@@ -343,13 +346,17 @@ export class Visualizer {
       { hue: this._mood.hue,   sat: this._mood.sat * 0.7,  lb: 18, lv: 10 },
     ]
     this._layers.forEach((layer, li) => {
-      const { hue, sat: s, lb, lv } = palette[li]
       const arr = layer.colorAttr.array
-      for (let i = 0; i < layer.count; i++) {
-        const t2 = i / layer.count
-        const l = lb + Math.sin(t2 * Math.PI * 13 + i * 0.09) * lv
-        const [r, g, b] = hsl(hue, s, Math.max(0, Math.min(100, l)))
-        arr[i*3]=r; arr[i*3+1]=g; arr[i*3+2]=b
+      if (this._inverted) {
+        for (let i = 0; i < layer.count; i++) { arr[i*3]=0.06; arr[i*3+1]=0.06; arr[i*3+2]=0.06 }
+      } else {
+        const { hue, sat: s, lb, lv } = palette[li]
+        for (let i = 0; i < layer.count; i++) {
+          const t2 = i / layer.count
+          const l = lb + Math.sin(t2 * Math.PI * 13 + i * 0.09) * lv
+          const [r, g, b] = hsl(hue, s, Math.max(0, Math.min(100, l)))
+          arr[i*3]=r; arr[i*3+1]=g; arr[i*3+2]=b
+        }
       }
       layer.colorAttr.needsUpdate = true
     })
@@ -450,13 +457,17 @@ export class Visualizer {
       {hue:mainHue,   sat:sat*0.7, lb:18, lv:10},
     ]
     this._layers.forEach((layer,li)=>{
-      const {hue,sat:s,lb,lv}=palette[li]
       const arr=layer.colorAttr.array
-      for(let i=0;i<layer.count;i++){
-        const t=i/layer.count
-        const l=lb+Math.sin(t*Math.PI*13+i*0.09)*lv
-        const [r,g,b]=hsl(hue,s,Math.max(0,Math.min(100,l)))
-        arr[i*3]=r;arr[i*3+1]=g;arr[i*3+2]=b
+      if (this._inverted) {
+        for(let i=0;i<layer.count;i++){arr[i*3]=0.06;arr[i*3+1]=0.06;arr[i*3+2]=0.06}
+      } else {
+        const {hue,sat:s,lb,lv}=palette[li]
+        for(let i=0;i<layer.count;i++){
+          const t=i/layer.count
+          const l=lb+Math.sin(t*Math.PI*13+i*0.09)*lv
+          const [r,g,b]=hsl(hue,s,Math.max(0,Math.min(100,l)))
+          arr[i*3]=r;arr[i*3+1]=g;arr[i*3+2]=b
+        }
       }
       layer.colorAttr.needsUpdate=true
     })
@@ -550,6 +561,7 @@ export class Visualizer {
 
     // 2. Glitch post-process → screen
     this.renderer.setRenderTarget(null)
+    this.renderer.setClearColor(this._inverted ? 0xffffff : 0x000000, 1)
     this.renderer.clear(true, true, true)
     this.renderer.render(this._glitchScene, this._glitchCam)
   }

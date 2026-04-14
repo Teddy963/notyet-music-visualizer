@@ -33,6 +33,10 @@ const mapToggle = el('button', 'map-toggle', 'MAP')
 mapToggle.id = 'map-toggle'
 mapToggle.title = 'Word Map'
 
+const invertBtn = el('button', 'invert-btn', '◑')
+invertBtn.id = 'invert-btn'
+invertBtn.title = 'Invert Colors'
+
 const captureBtn = el('button', 'capture-btn', '⬡')
 captureBtn.id = 'capture-btn'
 captureBtn.title = 'Capture (⌘S)'
@@ -70,6 +74,7 @@ analysisPanel.id = 'analysis-panel'
 
 app.appendChild(loginScreen)
 app.appendChild(nowPlaying)
+app.appendChild(invertBtn)
 app.appendChild(mapToggle)
 app.appendChild(captureBtn)
 app.appendChild(analysisToggle)
@@ -88,6 +93,16 @@ mapToggle.addEventListener('mouseleave', () => {
 
 // ── Capture button ──
 captureBtn.addEventListener('click', captureVisuals)
+
+// ── Invert ──
+let _inverted = false
+invertBtn.addEventListener('click', toggleInvert)
+
+function toggleInvert() {
+  _inverted = !_inverted
+  document.body.classList.toggle('inverted', _inverted)
+  invertBtn.classList.toggle('active', _inverted)
+}
 
 // ── Toggle ──
 analysisToggle.addEventListener('click', () => {
@@ -257,10 +272,12 @@ function launchVisualizer(audioSource) {
     const delta = (now - lastTime) / 1000
     lastTime    = now
     audioSource.update()
+    visualizer.setInvert(_inverted)
     visualizer.update(audioSource, delta)
-    overlay.setColor(...visualizer.accentRGB)
+    const color = _inverted ? [0, 0, 0] : visualizer.accentRGB
+    overlay.setColor(...color)
     overlay.update(audioSource, delta)
-    figureRenderer.setColor(...visualizer.accentRGB)
+    figureRenderer.setColor(...color)
     figureRenderer.update(audioSource, delta)
     updateMeters(audioSource)
 
