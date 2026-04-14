@@ -61,8 +61,11 @@ function tokenize(text) {
       ? stripKoParticle(raw.replace(/[^가-힣]/g, ''))
       : raw.replace(/[^a-zA-Z']/g, '').toLowerCase()
     if (cleaned.length < 1) return null
-    // Allow single-char only if it's a known connector (e.g. "i")
-    if (cleaned.length < 2 && !CONNECTOR_WORDS.has(cleaned)) return null
+    // Allow single-char: known connectors (e.g. "i") OR original uppercase letter (e.g. "D", "E")
+    if (cleaned.length < 2 && !CONNECTOR_WORDS.has(cleaned)) {
+      if (!isKorean && /^[A-Z]$/.test(raw.replace(/[^a-zA-Z]/g, ''))) { /* keep */ }
+      else return null
+    }
     if (isKorean ? KO_STOPWORDS.has(cleaned) : STOPWORDS.has(cleaned)) return null
     if (!isKorean && isFiller(cleaned)) return null
     return cleaned
