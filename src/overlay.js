@@ -32,9 +32,10 @@ function isFiller(w) {
 }
 
 // Korean particles to strip from END of words (longest first to avoid partial matches)
+// NOTE: '은'/'는' intentionally excluded — too ambiguous with verb endings (숨쉬는, 빛나는)
 const KO_PARTICLES = [
   '에서도','으로서','에게서','이라는','이라고','라고','에서','까지','부터','이다','이야',
-  '이랑','한테','에게','에도','으로','을','를','이','가','은','는','도','만','로',
+  '이랑','한테','에게','에도','으로','을','를','이','가','도','만','로',
   '에','의','와','과','야','랑',
 ]
 
@@ -749,29 +750,24 @@ export class DataOverlay {
       if (allDone) this._cascade = null
     }
 
-    // ── Mood color chips ─────────────────────────────────────────────────
+    // ── Mood color chips — right-side vertical timeline (bottom→top) ────
     if (this._moodChips.length > 0) {
-      const chipCx = 52, chipCy = h - 52
-      const chipR  = 24   // arrangement radius
-      const chipSz = 4.5
-      const total  = this._moodChips.length
+      const total   = this._moodChips.length
+      const chipW   = 28, chipH = 7, chipGap = 2
+      const baseX   = w - 52 - chipW   // align left edge with HUD
+      const baseY   = h - 52           // bottom anchor (same as HUD area)
       this._moodChips.forEach((chip, i) => {
         chip.born = Math.min(1, (chip.born || 0) + delta * 3)
-        const spread = Math.min(total, 16)
-        const angle = (i / spread) * Math.PI * 2 - Math.PI * 0.5
-        const cx = chipCx + Math.cos(angle) * chipR
-        const cy = chipCy + Math.sin(angle) * chipR
         const isNewest = i === total - 1
-        const ageFade  = 0.3 + (i / total) * 0.6
+        const ageFade  = 0.25 + (i / total) * 0.65
         const a        = ageFade * chip.born
-        ctx.beginPath()
-        ctx.arc(cx, cy, isNewest ? chipSz * 1.5 : chipSz, 0, Math.PI * 2)
+        const cy = baseY - i * (chipH + chipGap)
         ctx.fillStyle = `rgba(${chip.r},${chip.g},${chip.b},${a})`
-        ctx.fill()
-        if (isNewest && chip.born > 0.5) {
-          ctx.strokeStyle = `rgba(${chip.r},${chip.g},${chip.b},${a * 0.5})`
-          ctx.lineWidth = 1
-          ctx.stroke()
+        ctx.fillRect(baseX, cy - chipH, chipW, chipH)
+        if (isNewest) {
+          ctx.strokeStyle = `rgba(${chip.r},${chip.g},${chip.b},${a * 0.7})`
+          ctx.lineWidth = 0.5
+          ctx.strokeRect(baseX, cy - chipH, chipW, chipH)
         }
       })
     }
