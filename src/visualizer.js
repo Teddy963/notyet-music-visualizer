@@ -314,6 +314,7 @@ export class Visualizer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio,2))
     this.renderer.setSize(window.innerWidth,window.innerHeight)
     this.renderer.setClearColor(0x000000,0)
+    this.renderer.domElement.style.pointerEvents = 'none'
     container.appendChild(this.renderer.domElement)
 
     // Main scene
