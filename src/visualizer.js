@@ -132,7 +132,7 @@ const glitchFrag = `
     vec2 uv = vUv;
 
     // ── Subtle chromatic aberration ──
-    float aber = uBeat * 0.002 + uBass * 0.001 + uOverall * 0.0005 + uBeatFlash * 0.003;
+    float aber = uBeat * 0.001 + uBass * 0.0004 + uOverall * 0.0002 + uBeatFlash * 0.0015;
     float r = texture2D(uScene, uv + vec2( aber, aber * 0.3)).r;
     float g = texture2D(uScene, uv                          ).g;
     float b = texture2D(uScene, uv - vec2( aber, aber * 0.3)).b;
@@ -365,6 +365,8 @@ export class Visualizer {
     this._ghostMesh = ghostMesh
     this._ghostTrack = ''
     this._drawGhost('NOTYET')
+    this._repeatScale  = 0   // current (lerped)
+    this._repeatTarget = 0   // set per lyric line
 
     // Shockwave rings pool — beat-driven expanding rings
     this._rings = []
@@ -419,6 +421,9 @@ export class Visualizer {
       if (moodParams.shape) this.setShape(moodParams.shape)
     }
   }
+
+  // factor 0-1: how much the line repeats (1 = all same word). Expands particle sphere.
+  setRepeat(factor) { this._repeatTarget = factor }
 
   setShape(poseName) {
     this._layers.filter(l => l.cfg.figure).forEach(layer => {
@@ -638,9 +643,12 @@ export class Visualizer {
     atmo.rotation.x   -= 0.0002*sp
     if (scatter) { scatter.rotation.y += 0.0008*sp; scatter.rotation.z += 0.0003*sp }
 
-    // Camera: slow drift + beat push-pull
+    // Repeat scale lerp
+    this._repeatScale += (this._repeatTarget - this._repeatScale) * Math.min(1, delta * 1.5)
+
+    // Camera: slow drift + beat push-pull + repeat zoom-out
     const beatPush = this._beatFlash * 0.32
-    this.camera.position.z = 3.2 - beatPush
+    this.camera.position.z = 3.2 + this._repeatScale * 1.5 - beatPush
     this.camera.position.x = Math.sin(this.time*0.07)*0.5
     this.camera.position.y = Math.cos(this.time*0.045)*0.3
     this.camera.lookAt(0,0,0)

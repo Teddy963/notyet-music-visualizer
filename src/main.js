@@ -135,7 +135,18 @@ function _startPositionPolling() {
     } catch {}
   }
   poll()
-  setInterval(poll, 2000)
+  setInterval(poll, 1000)
+}
+
+// Detect word repetition in a lyric line → 0 (no repeat) to 1 (all same word)
+function detectRepeatFactor(line) {
+  const words = line.toLowerCase().replace(/[^\w가-힣\s]/g, '').split(/\s+/).filter(w => w.length > 1)
+  if (words.length < 3) return 0
+  const freq = {}
+  for (const w of words) freq[w] = (freq[w] || 0) + 1
+  const maxRep = Math.max(...Object.values(freq))
+  const ratio = maxRep / words.length
+  return ratio > 0.4 ? Math.min(1, (ratio - 0.4) * 2.5) : 0
 }
 
 // ── Launch ──
@@ -228,6 +239,7 @@ function launchVisualizer(audioSource) {
         _lastLineIdx = result.idx
         const mood = _moodMap?.[result.idx] ?? null
         visualizer.setLyricLine(result.words, mood)
+        visualizer.setRepeat(detectRepeatFactor(result.words))
         overlay.setLineMood(mood)
         overlay.setSubtitle(result.words)
         figureRenderer.setActiveLine(result.words)
