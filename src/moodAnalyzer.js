@@ -21,7 +21,7 @@ Return a JSON array — one object per line in the same order:
     "spread": 0.5,     // particle spread/expansion 0.0-1.0 (0=contracted, 1=exploded)
     "speed": 0.5,      // motion speed 0.0-1.0
     "shape": "deer",   // silhouette shape
-    "keywords": ["word1", "word2"]  // 1-3 most emotionally charged or visually evocative words. Keep in the ORIGINAL language (Korean → Korean, English → English). Skip function words (the/a/and/i/to / 은/는/이/가/을/를/의/에/도)
+    "keywords": ["word1", "word2"]  // 1-3 words EXTRACTED DIRECTLY FROM THIS LINE — must appear verbatim in the line. Pick the most emotionally charged or visually evocative. Keep original language. Skip function words (the/a/and/i/to / 은/는/이/가/을/를/의/에/도). NEVER invent or summarize — only use words that exist in the line.
   }
 ]
 

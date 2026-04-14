@@ -38,6 +38,7 @@ const particleVert = NOISE_GLSL + `
 
   uniform float uTime;
   uniform float uBeat;
+  uniform float uBeatFlash;
   uniform float uOverall;
   uniform float uInstrument;
   uniform float uReact;
@@ -46,6 +47,7 @@ const particleVert = NOISE_GLSL + `
   uniform float uSpeed;
   uniform float uMorph;
   uniform float uNoiseScale;
+  uniform float uAlphaMult;
 
   varying vec3  vColor;
   varying float vAlpha;
@@ -61,7 +63,7 @@ const particleVert = NOISE_GLSL + `
 
     // True 3D morphing — speed controlled by uSpeed
     float t = uTime * (0.06 + uSpeed * 0.1);
-    float energy = (0.18 + uInstrument * uReact * 0.7 + uBeat * uReact * 0.2) * (0.6 + uSpread * 0.8);
+    float energy = (0.18 + uInstrument * uReact * 0.7 + uBeat * uReact * 0.2 + uBeatFlash * uReact * 0.28) * (0.6 + uSpread * 0.8);
     vec3 nb = pos * 0.35 + vec3(t);
     pos.x += snoise(nb + vec3(17.3,  0.0,  0.0)) * uNoiseScale * energy;
     pos.y += snoise(nb + vec3( 0.0, 31.7,  0.0)) * uNoiseScale * energy;
@@ -83,10 +85,13 @@ const particleVert = NOISE_GLSL + `
     pos.y += cos(dAngle * 0.7) * drift;
     pos.z += sin(dAngle * 0.5 + 1.0) * drift * 0.4;
 
-    vAlpha = 0.03 + uOverall * 0.28 + uBeat * uReact * 0.18;
+    vAlpha = (0.03 + uOverall * 0.28 + uBeat * uReact * 0.18 + uBeatFlash * uReact * 0.35) * uAlphaMult;
 
     vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
-    gl_PointSize = aSize * (380.0 / -mvPos.z) * (1.0 + uInstrument * uReact * 1.2 + uBeat * uReact * 0.8);
+    // Clip particles too close to camera (they become giant blobs)
+    if (-mvPos.z < 4.0) { gl_Position = vec4(9.9, 9.9, 9.9, 1.0); return; }
+    float rawSize = aSize * (380.0 / -mvPos.z) * (1.0 + uInstrument * uReact * 1.2 + uBeat * uReact * 0.8 + uBeatFlash * uReact * 1.8);
+    gl_PointSize = min(rawSize, 10.0);
     gl_Position = projectionMatrix * mvPos;
   }
 `
@@ -115,6 +120,7 @@ const glitchFrag = `
   uniform float uTime;
   uniform float uBass;
   uniform float uBeat;
+  uniform float uBeatFlash;
   uniform float uOverall;
   uniform float uMid;
   uniform float uEnergy;
@@ -126,7 +132,7 @@ const glitchFrag = `
     vec2 uv = vUv;
 
     // ── Subtle chromatic aberration ──
-    float aber = uBeat * 0.003 + uBass * 0.0015 + uOverall * 0.001;
+    float aber = uBeat * 0.002 + uBass * 0.001 + uOverall * 0.0005 + uBeatFlash * 0.003;
     float r = texture2D(uScene, uv + vec2( aber, aber * 0.3)).r;
     float g = texture2D(uScene, uv                          ).g;
     float b = texture2D(uScene, uv - vec2( aber, aber * 0.3)).b;
@@ -148,9 +154,8 @@ const glitchFrag = `
 // figure=true  → tight pose, no rotation, small particles (silhouette reads)
 // figure=false → additive glow, free rotation
 const LAYERS = [
-  { name:'figure',     count:6000, pose:'standing', poseScale:1.0,  sizeRange:[0.28,0.80], react:0.04, rotSpeed:0,    ring:false, instrument:'kick',    figure:true,  noiseScale:0.05 },
-  { name:'rings',      count:500,  pose:null,       poseScale:1.0,  sizeRange:[0.2,0.6],   react:0.35, rotSpeed:0.10, ring:true,  instrument:'texture', figure:false, noiseScale:0.35 },
-  { name:'atmosphere', count:1200, pose:'dispersed',poseScale:2.0,  sizeRange:[0.12,0.40], react:0.06, rotSpeed:0.02, ring:false, instrument:'pad',     figure:false, noiseScale:0.28 },
+  { name:'atmosphere', count:1800, pose:'dispersed',poseScale:5.5,  sizeRange:[0.06,0.20], react:0.75, rotSpeed:0.005,ring:false, instrument:'pad',     figure:false, noiseScale:0.28, alphaMult:0.65 },
+  { name:'scatter',    count:500,  pose:'dispersed',poseScale:8.0,  sizeRange:[0.04,0.14], react:1.10, rotSpeed:0.01, ring:false, instrument:'texture', figure:false, noiseScale:0.38, alphaMult:0.50 },
 ]
 
 // ── Pose generators ──────────────────────────────────────────────────────────
@@ -267,9 +272,11 @@ function buildLayer(cfg){
   geo.setAttribute('aRadius', new THREE.BufferAttribute(rad,1))
   const uniforms={
     uTime:{value:0},uBeat:{value:0},uOverall:{value:0},
+    uBeatFlash:{value:0},
     uInstrument:{value:0},uReact:{value:react},uRotSpeed:{value:rotSpeed},
     uSpread:{value:0.5},uSpeed:{value:0.5},uMorph:{value:0},
     uNoiseScale:{value:noiseScale??0.35},
+    uAlphaMult:{value:cfg.alphaMult??1.0},
   }
   // Always additive — figure uses additive too for thermal accumulation
   const blending = THREE.AdditiveBlending
@@ -315,13 +322,14 @@ export class Visualizer {
 
     // Glitch post-process scene
     this._glitchUniforms={
-      uScene:    {value:this._rt.texture},
-      uTime:     {value:0},
-      uBass:     {value:0},
-      uBeat:     {value:0},
-      uOverall:  {value:0},
-      uMid:      {value:0},
-      uEnergy:   {value:0.5},
+      uScene:     {value:this._rt.texture},
+      uTime:      {value:0},
+      uBass:      {value:0},
+      uBeat:      {value:0},
+      uBeatFlash: {value:0},
+      uOverall:   {value:0},
+      uMid:       {value:0},
+      uEnergy:    {value:0.5},
     }
     const glitchMesh=new THREE.Mesh(
       new THREE.PlaneGeometry(2,2),
@@ -358,9 +366,23 @@ export class Visualizer {
     this._ghostTrack = ''
     this._drawGhost('NOTYET')
 
+    // Shockwave rings pool — beat-driven expanding rings
+    this._rings = []
+    for (let i = 0; i < 4; i++) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(1, 1.04, 64),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide })
+      )
+      ring.visible = false
+      this.scene.add(ring)
+      this._rings.push({ mesh: ring, active: false, scale: 0, alpha: 0 })
+    }
+    this._ringIdx = 0
+
     this.lyricsMode = false
     this._lyricEntryTime = -999
     this._ghostScale = 1.0
+    this._beatFlash = 0   // sharp instantaneous beat spike, fast decay
     // Mood state (from Claude analysis)
     this._mood = { hue: 200, sat: 65, energy: 0.5, spread: 0.5, speed: 0.5 }
     this._moodTarget = null
@@ -425,8 +447,8 @@ export class Visualizer {
     this.accentRGB = [Math.round(ar*255), Math.round(ag*255), Math.round(ab*255)]
 
     const palette = [
-      { hue: accentHue,        sat: 18,                    lb: 88, lv: 6  },  // figure: near-white
-      { hue: accentHue,        sat: this._mood.sat * 0.9,  lb: 48, lv: 12 },
+      { hue: accentHue,        sat: this._mood.sat * 0.55, lb: 68, lv: 8  },  // atmosphere: mood-tinted
+      { hue: accentHue,        sat: this._mood.sat * 0.9,  lb: 42, lv: 12 },
       { hue: this._mood.hue,   sat: this._mood.sat * 0.7,  lb: 18, lv: 10 },
     ]
     this._layers.forEach((layer, li) => {
@@ -504,8 +526,8 @@ export class Visualizer {
     this.accentRGB = [Math.round(ar*255), Math.round(ag*255), Math.round(ab*255)]
 
     const palette = [
-      {hue:accentHue, sat:15,       lb:88, lv:5},   // figure: near-white
-      {hue:accentHue, sat:sat*0.9,  lb:48, lv:12},
+      {hue:accentHue, sat:sat*0.5,  lb:68, lv:7},   // atmosphere: mood-tinted
+      {hue:accentHue, sat:sat*0.9,  lb:42, lv:12},
       {hue:mainHue,   sat:sat*0.7,  lb:18, lv:10},
     ]
     this._layers.forEach((layer, li) => {
@@ -532,8 +554,8 @@ export class Visualizer {
     this.accentRGB=[Math.round(ar*255),Math.round(ag*255),Math.round(ab*255)]
 
     const palette=[
-      {hue:accentHue, sat:15,      lb:88, lv:5},   // figure: near-white
-      {hue:accentHue, sat:sat*0.9, lb:45, lv:12},
+      {hue:accentHue, sat:sat*0.5, lb:68, lv:7},   // atmosphere: mood-tinted
+      {hue:accentHue, sat:sat*0.9, lb:42, lv:12},
       {hue:mainHue,   sat:sat*0.7, lb:18, lv:10},
     ]
     this._layers.forEach((layer,li)=>{
@@ -562,39 +584,70 @@ export class Visualizer {
     s.mid    =lerp(s.mid,    audio.mid,                   0.25)
     s.beat   =lerp(s.beat,   audio.beat?1:0,              audio.beat?0.8:0.12)
 
+    // Sharp beat flash: instant spike → fast exponential decay
+    if (audio.beat) {
+      this._beatFlash = 1.0
+      // Spawn shockwave ring
+      const r = this._rings[this._ringIdx % this._rings.length]
+      this._ringIdx++
+      r.active = true; r.scale = 0.1; r.alpha = 0.7
+      r.mesh.visible = true
+      // Tint to accent color
+      const [cr, cg, cb] = this.accentRGB
+      r.mesh.material.color.setRGB(cr/255, cg/255, cb/255)
+    }
+    this._beatFlash *= Math.pow(0.18, delta)
+
+    // Animate shockwave rings
+    for (const r of this._rings) {
+      if (!r.active) continue
+      r.scale += delta * (2.5 + s.bass * 2.0)
+      r.alpha -= delta * 1.4
+      r.mesh.scale.setScalar(r.scale)
+      r.mesh.material.opacity = Math.max(0, r.alpha)
+      if (r.alpha <= 0) { r.active = false; r.mesh.visible = false }
+    }
+
     // Particle uniforms
     this._layers.forEach(({cfg,uniforms})=>{
       uniforms.uTime.value      =this.time
-      uniforms.uBeat.value      =s.beat
+      uniforms.uBeat.value      =Math.max(s.beat, this._beatFlash)
+      uniforms.uBeatFlash.value =this._beatFlash
       uniforms.uOverall.value   =s.overall
       uniforms.uInstrument.value=s[cfg.instrument]??s.overall
       uniforms.uSpread.value    =this._mood.spread
       uniforms.uSpeed.value     =this._mood.speed
-      // noiseScale: figure layers stay tight, glow layers breathe freely
       uniforms.uNoiseScale.value=cfg.noiseScale??0.35
     })
 
     // Glitch uniforms — energy drives intensity
     const gu=this._glitchUniforms
-    gu.uTime.value   =this.time
-    gu.uBass.value   =s.bass
-    gu.uBeat.value   =s.beat
-    gu.uOverall.value=s.overall
-    gu.uMid.value    =s.mid
-    gu.uEnergy.value =this.features.energy
+    gu.uTime.value      =this.time
+    gu.uBass.value      =s.bass
+    gu.uBeat.value      =s.beat
+    gu.uBeatFlash.value =this._beatFlash
+    gu.uOverall.value   =s.overall
+    gu.uMid.value       =s.mid
+    gu.uEnergy.value    =this.features.energy
 
-    // Rotations — figure layer never rotates
-    const [_fig,rings,atmo]=this._layers.map(l=>l.points)
+    // Rotations
+    const [atmo, scatter]=this._layers.map(l=>l.points)
     const tempo=this.features.tempo/120
     const sp = 0.5 + this._mood.speed * 1.0
-    rings.rotation.y+=(0.001 +s.texture*0.003)*tempo*sp
-    rings.rotation.z+=0.0005*sp
-    atmo.rotation.y +=0.0005*sp
-    atmo.rotation.x -=0.0002*sp
+    atmo.rotation.y   += 0.0005*sp
+    atmo.rotation.x   -= 0.0002*sp
+    if (scatter) { scatter.rotation.y += 0.0008*sp; scatter.rotation.z += 0.0003*sp }
 
-    this.camera.position.x=Math.sin(this.time*0.07)*0.5
-    this.camera.position.y=Math.cos(this.time*0.045)*0.3
+    // Camera: slow drift + beat push-pull
+    const beatPush = this._beatFlash * 0.32
+    this.camera.position.z = 3.2 - beatPush
+    this.camera.position.x = Math.sin(this.time*0.07)*0.5
+    this.camera.position.y = Math.cos(this.time*0.045)*0.3
     this.camera.lookAt(0,0,0)
+
+    // Mesh scale punch on beat
+    const scalePunch = 1.0 + this._beatFlash * 0.06
+    this._layers.forEach(({points}) => points.scale.setScalar(scalePunch))
 
     // Ghost text animation
     if (this.lyricsMode) {
