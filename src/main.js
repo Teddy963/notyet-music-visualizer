@@ -4,7 +4,6 @@ import { analyzeLyrics } from './moodAnalyzer.js'
 import { AudioSync } from './audioSync.js'
 import { Visualizer } from './visualizer.js'
 import { DataOverlay } from './overlay.js'
-import { LyricGraph } from './lyricGraph.js'
 import { FigureRenderer } from './figureRenderer.js'
 
 const KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -138,8 +137,6 @@ async function startSpotifyMode() {
 }
 
 // ── Lyrics state ──
-let lyricGraphRef = null
-
 let _lyrics       = null
 let _moodMap      = null   // index → mood params from Claude
 let _lyricsPos    = 0
@@ -189,8 +186,6 @@ function launchVisualizer(audioSource) {
   const visualizer     = new Visualizer(app)
   const figureRenderer = new FigureRenderer(app)
   const overlay        = new DataOverlay(app)
-  const lyricGraph     = new LyricGraph(app)
-  lyricGraph.canvas.style.display = 'none'
   overlayRef = overlay
 
   nowPlaying.style.display     = 'block'
@@ -220,7 +215,6 @@ function launchVisualizer(audioSource) {
     figureRenderer.setActiveLine('')
     overlay.clearAccumRings()
     overlay.setTrack(track.name)
-    lyricGraph.setTrack(track.name)
     figureRenderer.setAlbumArt(track.album?.images?.[0]?.url ?? null)
 
     const lines = await getLyrics(track)
@@ -235,7 +229,6 @@ function launchVisualizer(audioSource) {
       _lastLine = ''
       _lastLineIdx = -1
       visualizer.lyricsMode = true
-      lyricGraph.setLines(lines)
       overlay.setLines(lines)
       figureRenderer.setWords(lines)
       // Analyze mood in background — no await, applies when ready
@@ -269,7 +262,6 @@ function launchVisualizer(audioSource) {
     overlay.update(audioSource, delta)
     figureRenderer.setColor(...visualizer.accentRGB)
     figureRenderer.update(audioSource, delta)
-    lyricGraph.update(audioSource, delta)
     updateMeters(audioSource)
 
     // Lyrics sync — extrapolate position between polls
@@ -289,8 +281,6 @@ function launchVisualizer(audioSource) {
         figureRenderer.setActiveLine(result.words)
 
 
-        lyricGraph.setActiveIndex(result.idx)
-        lyricGraph.setColor(...visualizer.accentRGB)
       }
     }
   }
