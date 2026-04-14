@@ -528,7 +528,7 @@ export class DataOverlay {
 
     const visited = new Set(activeIdxs)
     const levels  = [[...activeIdxs]]
-    for (let l = 0; l < 2; l++) {
+    for (let l = 0; l < 1; l++) {
       const next = []
       for (const idx of levels[levels.length - 1])
         for (const nb of (adj[idx] || []))
@@ -825,9 +825,9 @@ export class DataOverlay {
           wave.fired = true; wave.alpha = 1.0
         }
         if (wave.fired && wave.alpha > 0) {
-          wave.alpha = Math.max(0, wave.alpha - delta * 4)
+          wave.alpha = Math.max(0, wave.alpha - delta * 5)
           allDone = false
-          const a = wave.alpha * 0.75
+          const a = wave.alpha * 0.38
           ctx.lineWidth = 1.8
           for (const idx of wave.idxs) {
             const n = this._nodes[idx]
