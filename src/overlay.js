@@ -183,10 +183,14 @@ export class DataOverlay {
   _rebuildPositions() {
     const w = this.canvas.width, h = this.canvas.height
     const pad = 60
-    for (const n of this._nodes) {
-      n.x = pad + wordHash(n.word, 1) * (w - pad * 2)
-      n.y = pad + wordHash(n.word, 2) * (h - pad * 2)
-    }
+    this._nodes.forEach((n, nodeIdx) => {
+      const idx = n._nodeIdx ?? nodeIdx
+      const h1 = wordHash(n.word, 1), h2 = wordHash(n.word, 2)
+      const gx = (idx * 0.618034) % 1
+      const gy = (idx * 0.381966) % 1
+      n.x = pad + (h1 * 0.45 + gx * 0.55) * (w - pad * 2)
+      n.y = pad + (h2 * 0.45 + gy * 0.55) * (h - pad * 2)
+    })
   }
 
   // ── Called once per song ─────────────────────────────────────────────────────
@@ -221,7 +225,8 @@ export class DataOverlay {
     const coreThr  = Math.max(2, Math.ceil(maxFreq * 0.4))
     const titleWords = this._titleWords ?? new Set()
 
-    this._nodes = sorted.map(([word, count]) => {
+    const totalNodes = sorted.length
+    this._nodes = sorted.map(([word, count], nodeIdx) => {
       const h1 = wordHash(word, 1), h2 = wordHash(word, 2)
       const h3 = wordHash(word, 3), h4 = wordHash(word, 4)
       const isConnector = CONNECTOR_WORDS.has(word)
@@ -237,13 +242,19 @@ export class DataOverlay {
       const freqBoost   = freqScale * 36
       const titleBoost  = isTitle ? 18 + (count / maxFreq) * 20 : 0
       const buildupBoost = isBuildup ? 22 : 0
+      // Golden ratio lattice blended with word hash — breaks char-set clustering
+      const gx = (nodeIdx * 0.618034) % 1
+      const gy = (nodeIdx * 0.381966) % 1
+      const px = h1 * 0.45 + gx * 0.55
+      const py = h2 * 0.45 + gy * 0.55
       return {
         word, parts: [word], display: word.toUpperCase(),
-        x: pad + h1 * (w - pad * 2), y: pad + h2 * (h - pad * 2),
+        x: pad + px * (w - pad * 2), y: pad + py * (h - pad * 2),
         type, size: baseSize + freqBoost + titleBoost + buildupBoost,
         rot: (h3 - 0.5) * 0.6, freq: count,
         isCore, isBigram: false, isConnector, isAttach, isTitle,
         state: 'dormant', alpha: isTitle ? 0.3 : 0, activeTimer: 0,
+        _nodeIdx: nodeIdx,
       }
     })
 
