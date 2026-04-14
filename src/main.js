@@ -1,5 +1,5 @@
 import './style.css'
-import { login, handleCallback, isLoggedIn, startPolling, initPlayer, transferPlayback, getLyrics, getPlaybackState } from './spotify.js'
+import { login, handleCallback, isLoggedIn, startPolling, initPlayer, transferPlayback, getLyrics, getPlaybackState, skipToNext, skipToPrevious } from './spotify.js'
 import { analyzeLyrics } from './moodAnalyzer.js'
 import { AudioSync } from './audioSync.js'
 import { Visualizer } from './visualizer.js'
@@ -315,5 +315,12 @@ function infoHTML(id, label, defaultVal) {
       <span class="info-value" id="info-val-${id}">${defaultVal}</span>
     </div>`
 }
+
+// ── Keyboard shortcuts ──
+document.addEventListener('keydown', e => {
+  if (!isLoggedIn()) return
+  if (e.key === 'ArrowRight') { e.preventDefault(); skipToNext() }
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); skipToPrevious() }
+})
 
 boot()

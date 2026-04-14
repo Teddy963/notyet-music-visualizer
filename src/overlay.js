@@ -859,12 +859,22 @@ export class DataOverlay {
     if (this._stringPresence > 0.15) {
       this._stringSpawnT -= delta
       if (this._stringSpawnT <= 0) {
-        this._stringSpawnT = 3.0 + Math.random() * 2.5
-        const angle  = Math.random() * Math.PI * 2
-        const spd    = 70 + Math.random() * 70
-        // Angular velocity — positive or negative → curves left or right
-        const angV   = (Math.random() - 0.5) * 0.9  // rad/s, ±0.45 max
-        const edge   = Math.floor(Math.random() * 4)
+        // Spawn rate faster when energy is high
+        const energy = overall + (audio.melody ?? 0) * 0.5
+        this._stringSpawnT = Math.max(1.2, 3.5 - energy * 1.8) + Math.random() * 1.5
+
+        // Pitch at spawn → initial y-bias for direction angle
+        const pitchBias = 1 - ((audio.treble ?? 0) * 0.6 + (audio.mid ?? 0) * 0.4)
+        // Aim roughly toward pitch height from opposite side, ±60° spread
+        const baseAngle  = Math.atan2(pitchBias * h - h * 0.5, w * 0.5)
+        const angle      = baseAngle + (Math.random() - 0.5) * Math.PI * 1.2
+
+        // Speed scales with energy — faster on intense sections
+        const spd  = 80 + energy * 90 + Math.random() * 50
+        // Curvature: more dramatic on high melody/treble
+        const angV = (Math.random() - 0.5) * (0.6 + (audio.melody ?? 0) * 0.8)
+
+        const edge = Math.floor(Math.random() * 4)
         let sx, sy
         if      (edge === 0) { sx = -10;    sy = Math.random() * h }
         else if (edge === 1) { sx = Math.random() * w; sy = -10    }
@@ -874,9 +884,9 @@ export class DataOverlay {
           x: sx, y: sy,
           vx: Math.cos(angle) * spd,
           vy: Math.sin(angle) * spd,
-          angV,   // angular velocity — curves the path
+          angV,
           trail: [], alpha: 0, life: 0,
-          maxLife: 6.0 + Math.random() * 4.0,
+          maxLife: 5.0 + Math.random() * 4.0,
         })
       }
     }

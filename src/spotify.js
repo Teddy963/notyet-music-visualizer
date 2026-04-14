@@ -129,6 +129,17 @@ async function apiFetch(path) {
   return res.json()
 }
 
+async function apiPost(path) {
+  const token = await getToken()
+  await fetch(`https://api.spotify.com/v1${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export const skipToNext     = () => apiPost('/me/player/next')
+export const skipToPrevious = () => apiPost('/me/player/previous')
+
 export async function getCurrentTrack() {
   return apiFetch('/me/player/currently-playing')
 }

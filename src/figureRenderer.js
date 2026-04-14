@@ -252,11 +252,14 @@ export class FigureRenderer {
 
     // ── Lyric text ─────────────────────────────────────────────────────────────
     if (this._lyric) {
-      ctx.font      = `300 13px 'Courier New', monospace`
-      ctx.textAlign = 'center'
-      ctx.fillStyle = `rgba(255,255,255,1)`
+      ctx.font        = `300 13px 'Courier New', monospace`
+      ctx.textAlign   = 'center'
+      ctx.shadowColor = 'rgba(0,0,0,0.85)'
+      ctx.shadowBlur  = 6
+      ctx.fillStyle   = '#ffffff'
       ctx.fillText(this._lyric, w * 0.5, h * 0.05)
-      ctx.textAlign = 'left'
+      ctx.shadowBlur  = 0
+      ctx.textAlign   = 'left'
     }
   }
 }
