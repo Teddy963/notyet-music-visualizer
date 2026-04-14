@@ -137,6 +137,10 @@ export class DataOverlay {
     this._accumNodeY   = 0
     this._accumNodeType = 'circle'  // 'circle' or 'box'
 
+    // String / sustained-instrument wave lines
+    this._stringPresence = 0   // smoothed 0-1, drives fade in/out
+    this._stringPhase    = 0   // advances over time for flowing motion
+
     // Beat effects
     this._pings      = []   // A: sonar rings  — driven by bass/kick
     this._edgePulses = []   // B: edge signals — driven by treble (continuous)
@@ -842,6 +846,35 @@ export class DataOverlay {
         ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2)
         ctx.stroke()
       }
+    }
+
+    // ── String / sustained wave lines — fade in when pad+texture present ──
+    const stringSignal = (s.pad ?? 0) * 0.65 + (s.texture ?? 0) * 0.35
+    const stringTarget = stringSignal > 0.28 ? Math.min(1, (stringSignal - 0.28) * 3.5) : 0
+    const presSpd = stringTarget > this._stringPresence ? 1.8 : 0.7
+    this._stringPresence += (stringTarget - this._stringPresence) * Math.min(1, delta * presSpd)
+    this._stringPhase += delta * (0.9 + (s.melody ?? 0) * 0.6)
+
+    if (this._stringPresence > 0.01) {
+      const pres = this._stringPresence
+      // Two waves at different vertical positions, phases, and frequencies
+      const waves = [
+        { cy: h * 0.38, freq: 0.010, amp: 18 + (s.texture ?? 0) * 14, phaseOff: 0,    spd: 1.0, alpha: 0.22 },
+        { cy: h * 0.62, freq: 0.007, amp: 24 + (s.pad     ?? 0) * 18, phaseOff: 2.1,  spd: 0.6, alpha: 0.14 },
+      ]
+      ctx.save()
+      for (const wv of waves) {
+        const a = pres * wv.alpha
+        ctx.strokeStyle = `rgba(${cr},${cg},${cb},${a})`
+        ctx.lineWidth   = 0.9
+        ctx.beginPath()
+        for (let x = 0; x <= w; x += 3) {
+          const y = wv.cy + wv.amp * Math.sin(x * wv.freq + wv.phaseOff + this._stringPhase * wv.spd)
+          x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+        }
+        ctx.stroke()
+      }
+      ctx.restore()
     }
 
     // ── Mood color chips — right-side vertical timeline (bottom→top) ────
