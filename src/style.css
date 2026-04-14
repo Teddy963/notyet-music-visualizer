@@ -66,9 +66,20 @@ canvas { display: block; position: fixed; inset: 0; opacity: 0.55; mix-blend-mod
   color: rgba(255,255,255,0.4);
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
   font-size: 0.7rem; letter-spacing: 0.05em;
-  pointer-events: none; display: none; line-height: 1.6;
+  pointer-events: auto; display: none; line-height: 1.6;
 }
+#now-playing .track-row {
+  display: flex; align-items: center; gap: 10px;
+}
+#now-playing .track-info { display: flex; flex-direction: column; }
 #now-playing .track { font-size: 0.85rem; color: rgba(255,255,255,0.85); font-weight: 400; }
+#now-playing .skip-btn {
+  background: none; border: none; cursor: pointer;
+  color: rgba(255,255,255,0.3); font-size: 1.1rem; line-height: 1;
+  padding: 2px 4px; transition: color 0.15s;
+  pointer-events: auto;
+}
+#now-playing .skip-btn:hover { color: rgba(255,255,255,0.85); }
 
 /* ── Analysis toggle button ── */
 #analysis-toggle {

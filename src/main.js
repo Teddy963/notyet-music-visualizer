@@ -18,7 +18,16 @@ const loginScreen = el('div', 'login-screen', `
 `)
 loginScreen.id = 'login-screen'
 
-const nowPlaying = el('div', 'now-playing', `<div class="track"></div><div class="artist"></div>`)
+const nowPlaying = el('div', 'now-playing', `
+  <div class="track-row">
+    <button class="skip-btn" id="skip-prev" title="Previous (←)">&#8249;�</button>
+    <div class="track-info">
+      <div class="track"></div>
+      <div class="artist"></div>
+    </div>
+    <button class="skip-btn" id="skip-next" title="Next (→)">&#8250;</button>
+  </div>
+`)
 nowPlaying.id = 'now-playing'
 
 const analysisToggle = el('button', 'analysis-toggle', '◈')
@@ -159,6 +168,9 @@ function launchVisualizer(audioSource) {
 
   nowPlaying.style.display    = 'block'
   analysisToggle.style.display = 'flex'
+
+  document.getElementById('skip-prev').addEventListener('click', skipToPrevious)
+  document.getElementById('skip-next').addEventListener('click', skipToNext)
 
   _startPositionPolling()
 
