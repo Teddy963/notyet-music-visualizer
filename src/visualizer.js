@@ -371,19 +371,6 @@ export class Visualizer {
     this._ghostMesh = ghostMesh
     this._ghostTrack = ''
     this._drawGhost('NOTYET')
-    // Shockwave rings pool — beat-driven expanding rings
-    this._rings = []
-    for (let i = 0; i < 4; i++) {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(1, 1.04, 64),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide })
-      )
-      ring.visible = false
-      this.scene.add(ring)
-      this._rings.push({ mesh: ring, active: false, scale: 0, alpha: 0 })
-    }
-    this._ringIdx = 0
-
     this._repeatActive = false
 
     this.lyricsMode = false
@@ -596,28 +583,8 @@ export class Visualizer {
     s.beat   =lerp(s.beat,   audio.beat?1:0,              audio.beat?0.8:0.12)
 
     // Sharp beat flash: instant spike → fast exponential decay
-    if (audio.beat) {
-      this._beatFlash = 1.0
-      // Spawn shockwave ring
-      const r = this._rings[this._ringIdx % this._rings.length]
-      this._ringIdx++
-      r.active = true; r.scale = 0.1; r.alpha = 0.7
-      r.mesh.visible = true
-      // Tint to accent color
-      const [cr, cg, cb] = this.accentRGB
-      r.mesh.material.color.setRGB(cr/255, cg/255, cb/255)
-    }
+    if (audio.beat) this._beatFlash = 1.0
     this._beatFlash *= Math.pow(0.18, delta)
-
-    // Animate shockwave rings
-    for (const r of this._rings) {
-      if (!r.active) continue
-      r.scale += delta * (2.5 + s.bass * 2.0)
-      r.alpha -= delta * 1.4
-      r.mesh.scale.setScalar(r.scale)
-      r.mesh.material.opacity = Math.max(0, r.alpha)
-      if (r.alpha <= 0) { r.active = false; r.mesh.visible = false }
-    }
 
     // Particle uniforms
     this._layers.forEach(({cfg,uniforms})=>{
