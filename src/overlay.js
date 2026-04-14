@@ -138,8 +138,9 @@ export class DataOverlay {
     this._accumNodeType = 'circle'  // 'circle' or 'box'
 
     // String / sustained-instrument wave lines
-    this._stringPresence = 0   // smoothed 0-1, drives fade in/out
-    this._stringPhase    = 0   // advances over time for flowing motion
+    this._stringPresence  = 0   // smoothed 0-1
+    this._stringDots      = [] // traversing melody dots
+    this._stringSpawnT    = 0  // spawn timer
 
     // Beat effects
     this._pings      = []   // A: sonar rings  — driven by bass/kick
@@ -848,34 +849,66 @@ export class DataOverlay {
       }
     }
 
-    // ── String / sustained wave lines — fade in when pad+texture present ──
+    // ── String melody dots — traverse screen, y = pitch contour ───────────
     const stringSignal = (audio.pad ?? 0) * 0.65 + (audio.texture ?? 0) * 0.35
-    const stringTarget = stringSignal > 0.28 ? Math.min(1, (stringSignal - 0.28) * 3.5) : 0
-    const presSpd = stringTarget > this._stringPresence ? 1.8 : 0.7
+    const stringTarget = stringSignal > 0.25 ? Math.min(1, (stringSignal - 0.25) * 4.0) : 0
+    const presSpd = stringTarget > this._stringPresence ? 2.0 : 0.5
     this._stringPresence += (stringTarget - this._stringPresence) * Math.min(1, delta * presSpd)
-    this._stringPhase += delta * (0.9 + (audio.melody ?? 0) * 0.6)
 
-    if (this._stringPresence > 0.01) {
-      const pres = this._stringPresence
-      // Two waves at different vertical positions, phases, and frequencies
-      const waves = [
-        { cy: h * 0.38, freq: 0.010, amp: 18 + (audio.texture ?? 0) * 14, phaseOff: 0,    spd: 1.0, alpha: 0.22 },
-        { cy: h * 0.62, freq: 0.007, amp: 24 + (audio.pad     ?? 0) * 18, phaseOff: 2.1,  spd: 0.6, alpha: 0.14 },
-      ]
-      ctx.save()
-      for (const wv of waves) {
-        const a = pres * wv.alpha
-        ctx.strokeStyle = `rgba(${cr},${cg},${cb},${a})`
-        ctx.lineWidth   = 0.9
-        ctx.beginPath()
-        for (let x = 0; x <= w; x += 3) {
-          const y = wv.cy + wv.amp * Math.sin(x * wv.freq + wv.phaseOff + this._stringPhase * wv.spd)
-          x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
-        }
-        ctx.stroke()
+    // Pitch → y: treble high = top, bass = bottom
+    const pitchY = h * (0.15 + (1 - ((audio.treble ?? 0) * 0.55 + (audio.mid ?? 0) * 0.45)) * 0.70)
+
+    // Spawn a new traversing dot
+    if (this._stringPresence > 0.15) {
+      this._stringSpawnT -= delta
+      if (this._stringSpawnT <= 0) {
+        this._stringSpawnT = 4.5 + Math.random() * 2.0
+        this._stringDots.push({ x: 0, y: pitchY, trail: [], alpha: 0 })
       }
-      ctx.restore()
     }
+
+    // Update + draw dots
+    this._stringDots = this._stringDots.filter(d => d.x <= w + 20 && d.alpha > -0.1)
+    ctx.save()
+    for (const d of this._stringDots) {
+      // Move across screen
+      d.x += delta * 130
+      // y smoothly tracks current pitch
+      d.y += (pitchY - d.y) * Math.min(1, delta * 2.2)
+      d.trail.push({ x: d.x, y: d.y })
+      if (d.trail.length > 220) d.trail.shift()
+
+      // Fade in at start, fade out near end
+      const prog = d.x / w
+      if (prog < 0.08)       d.alpha = Math.min(1, d.alpha + delta * 3)
+      else if (prog > 0.85)  d.alpha = Math.max(0, d.alpha - delta * 2.5)
+
+      const a = d.alpha * this._stringPresence
+
+      // Trail — fades toward tail
+      if (d.trail.length > 1) {
+        for (let i = 1; i < d.trail.length; i++) {
+          const t  = i / d.trail.length
+          const ta = a * t * 0.55
+          if (ta < 0.01) continue
+          ctx.strokeStyle = `rgba(${cr},${cg},${cb},${ta})`
+          ctx.lineWidth   = 0.8
+          ctx.beginPath()
+          ctx.moveTo(d.trail[i - 1].x, d.trail[i - 1].y)
+          ctx.lineTo(d.trail[i].x,     d.trail[i].y)
+          ctx.stroke()
+        }
+      }
+
+      // Dot head
+      if (a > 0.01) {
+        ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`
+        ctx.beginPath()
+        ctx.arc(d.x, d.y, 2.2, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+    ctx.restore()
 
     // ── Mood color chips — right-side vertical timeline (bottom→top) ────
     if (this._moodChips.length > 0) {
