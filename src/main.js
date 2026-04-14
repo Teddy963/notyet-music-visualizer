@@ -30,6 +30,10 @@ const nowPlaying = el('div', 'now-playing', `
 `)
 nowPlaying.id = 'now-playing'
 
+const mapToggle = el('button', 'map-toggle', 'MAP')
+mapToggle.id = 'map-toggle'
+mapToggle.title = 'Word Map'
+
 const captureBtn = el('button', 'capture-btn', '⬡')
 captureBtn.id = 'capture-btn'
 captureBtn.title = 'Capture (⌘S)'
@@ -67,9 +71,16 @@ analysisPanel.id = 'analysis-panel'
 
 app.appendChild(loginScreen)
 app.appendChild(nowPlaying)
+app.appendChild(mapToggle)
 app.appendChild(captureBtn)
 app.appendChild(analysisToggle)
 app.appendChild(analysisPanel)
+
+// ── Map toggle ──
+mapToggle.addEventListener('click', () => {
+  const open = mapToggle.classList.toggle('active')
+  lyricGraphRef?.setVisible(open)
+})
 
 // ── Capture button ──
 captureBtn.addEventListener('click', captureVisuals)
@@ -122,6 +133,8 @@ async function startSpotifyMode() {
 }
 
 // ── Lyrics state ──
+let lyricGraphRef = null
+
 let _lyrics       = null
 let _moodMap      = null   // index → mood params from Claude
 let _lyricsPos    = 0
@@ -173,9 +186,11 @@ function launchVisualizer(audioSource) {
   const overlay        = new DataOverlay(app)
   const lyricGraph     = new LyricGraph(app)
   lyricGraph.canvas.style.display = 'none'
+  lyricGraphRef = lyricGraph
 
-  nowPlaying.style.display    = 'block'
-  captureBtn.style.display    = 'flex'
+  nowPlaying.style.display     = 'block'
+  mapToggle.style.display      = 'flex'
+  captureBtn.style.display     = 'flex'
   analysisToggle.style.display = 'flex'
 
   document.getElementById('skip-prev').addEventListener('click', skipToPrevious)

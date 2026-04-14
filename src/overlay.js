@@ -162,7 +162,13 @@ export class DataOverlay {
     this._lastMoodHue = null
 
     this._resize()
-    window.addEventListener('resize', () => { this._resize(); this._rebuildPositions() })
+    window.addEventListener('resize', () => {
+      this._resize()
+      this._rebuildPositions()
+      // Clear in-flight rings — their coordinates are stale after resize
+      this._accumCircles = []
+      this._prevLineTokens = new Set()
+    })
     this._buildMapButton(container)
   }
 

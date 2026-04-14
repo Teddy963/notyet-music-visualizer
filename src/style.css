@@ -81,6 +81,20 @@ canvas { display: block; position: fixed; inset: 0; opacity: 0.55; mix-blend-mod
 }
 #now-playing .skip-btn:hover { color: rgba(255,255,255,0.85); }
 
+/* ── Map toggle button ── */
+#map-toggle {
+  position: fixed; bottom: 28px; right: 116px;
+  width: 44px; height: 32px;
+  border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.35);
+  color: rgba(255,255,255,0.4); font-size: 0.55rem; letter-spacing: 0.12em;
+  cursor: pointer; transition: all 0.2s; display: none;
+  align-items: center; justify-content: center;
+  font-family: 'Courier New', monospace;
+  z-index: 20; backdrop-filter: blur(4px);
+}
+#map-toggle:hover { border-color: rgba(255,255,255,0.5); color: rgba(255,255,255,0.8); }
+#map-toggle.active { border-color: rgba(255,255,255,0.6); color: rgba(255,255,255,0.9); }
+
 /* ── Capture button ── */
 #capture-btn {
   position: fixed; bottom: 28px; right: 72px;

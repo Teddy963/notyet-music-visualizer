@@ -53,6 +53,8 @@ export class LyricGraph {
     this.canvas.height = window.innerHeight
   }
 
+  setVisible(v) { this.canvas.style.display = v ? 'block' : 'none' }
+
   setLines(lines) {
     this._lines = lines ?? []
     this._activeIdx = -1
