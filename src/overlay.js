@@ -169,23 +169,6 @@ export class DataOverlay {
       this._accumCircles = []
       this._prevLineTokens = new Set()
     })
-    this._buildMapButton(container)
-  }
-
-  _buildMapButton(container) {
-    const btn = document.createElement('button')
-    btn.textContent = 'MAP'
-    btn.style.cssText = `
-      position:fixed; bottom:28px; right:72px; z-index:30;
-      background:transparent; border:1px solid rgba(255,40,40,0.3);
-      color:rgba(255,40,40,0.4); font:300 9px 'Courier New',monospace;
-      letter-spacing:0.12em; padding:5px 10px; cursor:pointer;
-      transition: border-color 0.2s, color 0.2s;
-    `
-    btn.addEventListener('mouseenter', () => { this._mapPinned = true })
-    btn.addEventListener('mouseleave', () => { this._mapPinned = false })
-    container.appendChild(btn)
-    this._mapBtn = btn
   }
 
   _resize() {
@@ -385,6 +368,8 @@ export class DataOverlay {
       this._conShape = (e >= 0.55 || warm) ? 'circle' : 'box'
     }
   }
+
+  setMapPinned(v) { this._mapPinned = v }
 
   setSubtitle(text) { this._lastActiveWords = text; this.setActiveLine(text) }
 
@@ -642,12 +627,7 @@ export class DataOverlay {
     this._mapReveal += ((targetReveal - this._mapReveal) * Math.min(1, delta * 4))
     const revealMult = 1 + this._mapReveal * 8
 
-    // Sync MAP button color
-    if (this._mapBtn) {
-      const c = `rgba(${cr},${cg},${cb},`
-      this._mapBtn.style.borderColor = c + (this._mapPinned ? '0.7)' : '0.3)')
-      this._mapBtn.style.color       = c + (this._mapPinned ? '0.9)' : '0.4)')
-    }
+
 
     ctx.clearRect(0, 0, w, h)
 

@@ -77,9 +77,11 @@ app.appendChild(analysisToggle)
 app.appendChild(analysisPanel)
 
 // ── Map toggle ──
+let overlayRef = null
 mapToggle.addEventListener('click', () => {
   const open = mapToggle.classList.toggle('active')
   lyricGraphRef?.setVisible(open)
+  overlayRef?.setMapPinned(open)
 })
 
 // ── Capture button ──
@@ -187,6 +189,7 @@ function launchVisualizer(audioSource) {
   const lyricGraph     = new LyricGraph(app)
   lyricGraph.canvas.style.display = 'none'
   lyricGraphRef = lyricGraph
+  overlayRef    = overlay
 
   nowPlaying.style.display     = 'block'
   mapToggle.style.display      = 'flex'
