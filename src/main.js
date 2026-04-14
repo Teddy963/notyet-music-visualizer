@@ -20,7 +20,7 @@ loginScreen.id = 'login-screen'
 
 const nowPlaying = el('div', 'now-playing', `
   <div class="track-row">
-    <button class="skip-btn" id="skip-prev" title="Previous (←)">&#8249;�</button>
+    <button class="skip-btn" id="skip-prev" title="Previous (←)">&#8249;</button>
     <div class="track-info">
       <div class="track"></div>
       <div class="artist"></div>
