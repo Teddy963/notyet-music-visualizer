@@ -849,50 +849,69 @@ export class DataOverlay {
       }
     }
 
-    // ── String melody dots — traverse screen, y = pitch contour ───────────
+    // ── String melody dots — meteor-style, random direction, long trail ────
     const stringSignal = (audio.pad ?? 0) * 0.65 + (audio.texture ?? 0) * 0.35
     const stringTarget = stringSignal > 0.25 ? Math.min(1, (stringSignal - 0.25) * 4.0) : 0
     const presSpd = stringTarget > this._stringPresence ? 2.0 : 0.5
     this._stringPresence += (stringTarget - this._stringPresence) * Math.min(1, delta * presSpd)
 
-    // Pitch → y: treble high = top, bass = bottom
+    // Pitch → target y for newly spawned dots
     const pitchY = h * (0.15 + (1 - ((audio.treble ?? 0) * 0.55 + (audio.mid ?? 0) * 0.45)) * 0.70)
 
-    // Spawn a new traversing dot
+    // Spawn
     if (this._stringPresence > 0.15) {
       this._stringSpawnT -= delta
       if (this._stringSpawnT <= 0) {
-        this._stringSpawnT = 4.5 + Math.random() * 2.0
-        this._stringDots.push({ x: 0, y: pitchY, trail: [], alpha: 0 })
+        this._stringSpawnT = 3.5 + Math.random() * 2.5
+        // Random angle: mostly diagonal — full 360° but weighted toward horizontal
+        const angle = (Math.random() * Math.PI * 2)
+        const spd   = 90 + Math.random() * 60
+        // Start from random edge of screen
+        const edge  = Math.floor(Math.random() * 4) // 0=left,1=top,2=right,3=bottom
+        let sx, sy
+        if      (edge === 0) { sx = 0;  sy = Math.random() * h }
+        else if (edge === 1) { sx = Math.random() * w; sy = 0  }
+        else if (edge === 2) { sx = w;  sy = Math.random() * h }
+        else                 { sx = Math.random() * w; sy = h  }
+        this._stringDots.push({
+          x: sx, y: sy,
+          vx: Math.cos(angle) * spd,
+          vy: Math.sin(angle) * spd,
+          trail: [], alpha: 0, life: 0,
+          maxLife: 5.5 + Math.random() * 3.0,
+        })
       }
     }
 
     // Update + draw dots
-    this._stringDots = this._stringDots.filter(d => d.x <= w + 20 && d.alpha > -0.1)
+    this._stringDots = this._stringDots.filter(d => d.alpha > -0.2 && d.life < d.maxLife + 2)
     ctx.save()
     for (const d of this._stringDots) {
-      // Move across screen
-      d.x += delta * 130
-      // y smoothly tracks current pitch
-      d.y += (pitchY - d.y) * Math.min(1, delta * 2.2)
-      d.trail.push({ x: d.x, y: d.y })
-      if (d.trail.length > 220) d.trail.shift()
+      d.life += delta
+      d.x += d.vx * delta
+      d.y += d.vy * delta
+      // y gently nudges toward pitch (loose tracking, not tight)
+      d.vy += (pitchY - d.y) * delta * 0.18
 
-      // Fade in at start, fade out near end
-      const prog = d.x / w
-      if (prog < 0.08)       d.alpha = Math.min(1, d.alpha + delta * 3)
-      else if (prog > 0.85)  d.alpha = Math.max(0, d.alpha - delta * 2.5)
+      d.trail.push({ x: d.x, y: d.y })
+      if (d.trail.length > 420) d.trail.shift()
+
+      // Fade in → sustain → fade out
+      const lifeRatio = d.life / d.maxLife
+      if (lifeRatio < 0.1)      d.alpha = Math.min(1, d.alpha + delta * 4)
+      else if (lifeRatio > 0.8) d.alpha = Math.max(0, d.alpha - delta * 1.2)
 
       const a = d.alpha * this._stringPresence
 
-      // Trail — fades toward tail
+      // Trail — meteor afterglow: bright near head, fades to nothing at tail
       if (d.trail.length > 1) {
-        for (let i = 1; i < d.trail.length; i++) {
-          const t  = i / d.trail.length
-          const ta = a * t * 0.55
-          if (ta < 0.01) continue
+        const tLen = d.trail.length
+        for (let i = Math.max(1, tLen - 300); i < tLen; i++) {
+          const t  = (i - (tLen - 300)) / Math.min(tLen, 300)  // 0=tail 1=head
+          const ta = a * Math.pow(t, 1.8) * 0.7
+          if (ta < 0.008) continue
           ctx.strokeStyle = `rgba(${cr},${cg},${cb},${ta})`
-          ctx.lineWidth   = 0.8
+          ctx.lineWidth   = 0.7 + t * 0.8
           ctx.beginPath()
           ctx.moveTo(d.trail[i - 1].x, d.trail[i - 1].y)
           ctx.lineTo(d.trail[i].x,     d.trail[i].y)
@@ -900,11 +919,11 @@ export class DataOverlay {
         }
       }
 
-      // Dot head
+      // Head glow
       if (a > 0.01) {
         ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`
         ctx.beginPath()
-        ctx.arc(d.x, d.y, 2.2, 0, Math.PI * 2)
+        ctx.arc(d.x, d.y, 2.5, 0, Math.PI * 2)
         ctx.fill()
       }
     }
