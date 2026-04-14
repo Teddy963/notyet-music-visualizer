@@ -849,69 +849,73 @@ export class DataOverlay {
       }
     }
 
-    // ── String melody dots — meteor-style, random direction, long trail ────
+    // ── String melody arcs — orbital curved trails (ref: constellation UI) ──
     const stringSignal = (audio.pad ?? 0) * 0.65 + (audio.texture ?? 0) * 0.35
     const stringTarget = stringSignal > 0.25 ? Math.min(1, (stringSignal - 0.25) * 4.0) : 0
     const presSpd = stringTarget > this._stringPresence ? 2.0 : 0.5
     this._stringPresence += (stringTarget - this._stringPresence) * Math.min(1, delta * presSpd)
 
-    // Pitch → target y for newly spawned dots
-    const pitchY = h * (0.15 + (1 - ((audio.treble ?? 0) * 0.55 + (audio.mid ?? 0) * 0.45)) * 0.70)
-
     // Spawn
     if (this._stringPresence > 0.15) {
       this._stringSpawnT -= delta
       if (this._stringSpawnT <= 0) {
-        this._stringSpawnT = 3.5 + Math.random() * 2.5
-        // Random angle: mostly diagonal — full 360° but weighted toward horizontal
-        const angle = (Math.random() * Math.PI * 2)
-        const spd   = 90 + Math.random() * 60
-        // Start from random edge of screen
-        const edge  = Math.floor(Math.random() * 4) // 0=left,1=top,2=right,3=bottom
+        this._stringSpawnT = 3.0 + Math.random() * 2.5
+        const angle  = Math.random() * Math.PI * 2
+        const spd    = 70 + Math.random() * 70
+        // Angular velocity — positive or negative → curves left or right
+        const angV   = (Math.random() - 0.5) * 0.9  // rad/s, ±0.45 max
+        const edge   = Math.floor(Math.random() * 4)
         let sx, sy
-        if      (edge === 0) { sx = 0;  sy = Math.random() * h }
-        else if (edge === 1) { sx = Math.random() * w; sy = 0  }
-        else if (edge === 2) { sx = w;  sy = Math.random() * h }
-        else                 { sx = Math.random() * w; sy = h  }
+        if      (edge === 0) { sx = -10;    sy = Math.random() * h }
+        else if (edge === 1) { sx = Math.random() * w; sy = -10    }
+        else if (edge === 2) { sx = w + 10; sy = Math.random() * h }
+        else                 { sx = Math.random() * w; sy = h + 10  }
         this._stringDots.push({
           x: sx, y: sy,
           vx: Math.cos(angle) * spd,
           vy: Math.sin(angle) * spd,
+          angV,   // angular velocity — curves the path
           trail: [], alpha: 0, life: 0,
-          maxLife: 5.5 + Math.random() * 3.0,
+          maxLife: 6.0 + Math.random() * 4.0,
         })
       }
     }
 
-    // Update + draw dots
-    this._stringDots = this._stringDots.filter(d => d.alpha > -0.2 && d.life < d.maxLife + 2)
+    // Update + draw
+    this._stringDots = this._stringDots.filter(d => d.life < d.maxLife + 3)
     ctx.save()
     for (const d of this._stringDots) {
       d.life += delta
+
+      // Rotate velocity vector → creates curved orbital arc
+      const cos = Math.cos(d.angV * delta), sin = Math.sin(d.angV * delta)
+      const nvx = d.vx * cos - d.vy * sin
+      const nvy = d.vx * sin + d.vy * cos
+      d.vx = nvx; d.vy = nvy
       d.x += d.vx * delta
       d.y += d.vy * delta
-      // y gently nudges toward pitch (loose tracking, not tight)
-      d.vy += (pitchY - d.y) * delta * 0.18
 
       d.trail.push({ x: d.x, y: d.y })
-      if (d.trail.length > 420) d.trail.shift()
+      if (d.trail.length > 500) d.trail.shift()
 
       // Fade in → sustain → fade out
-      const lifeRatio = d.life / d.maxLife
-      if (lifeRatio < 0.1)      d.alpha = Math.min(1, d.alpha + delta * 4)
-      else if (lifeRatio > 0.8) d.alpha = Math.max(0, d.alpha - delta * 1.2)
+      const lr = d.life / d.maxLife
+      if (lr < 0.08)      d.alpha = Math.min(1, d.alpha + delta * 5)
+      else if (lr > 0.75) d.alpha = Math.max(0, d.alpha - delta * 0.9)
 
       const a = d.alpha * this._stringPresence
+      if (a < 0.005) continue
 
-      // Trail — meteor afterglow: bright near head, fades to nothing at tail
+      // Arc trail — power curve: bright head, fades to invisible tail
       if (d.trail.length > 1) {
-        const tLen = d.trail.length
-        for (let i = Math.max(1, tLen - 300); i < tLen; i++) {
-          const t  = (i - (tLen - 300)) / Math.min(tLen, 300)  // 0=tail 1=head
-          const ta = a * Math.pow(t, 1.8) * 0.7
-          if (ta < 0.008) continue
+        const tLen    = d.trail.length
+        const visible = Math.min(tLen, 380)
+        for (let i = tLen - visible + 1; i < tLen; i++) {
+          const t  = (i - (tLen - visible)) / visible  // 0=old 1=head
+          const ta = a * Math.pow(t, 2.2) * 0.75
+          if (ta < 0.006) continue
           ctx.strokeStyle = `rgba(${cr},${cg},${cb},${ta})`
-          ctx.lineWidth   = 0.7 + t * 0.8
+          ctx.lineWidth   = 0.6 + t * 1.0
           ctx.beginPath()
           ctx.moveTo(d.trail[i - 1].x, d.trail[i - 1].y)
           ctx.lineTo(d.trail[i].x,     d.trail[i].y)
@@ -919,13 +923,11 @@ export class DataOverlay {
         }
       }
 
-      // Head glow
-      if (a > 0.01) {
-        ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`
-        ctx.beginPath()
-        ctx.arc(d.x, d.y, 2.5, 0, Math.PI * 2)
-        ctx.fill()
-      }
+      // Head dot
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${a * 0.9})`
+      ctx.beginPath()
+      ctx.arc(d.x, d.y, 2.0, 0, Math.PI * 2)
+      ctx.fill()
     }
     ctx.restore()
 
