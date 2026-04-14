@@ -129,6 +129,13 @@ export class DataOverlay {
     this._mapReveal       = 0
     this._mapPinned       = false
 
+    // Accumulation rings — repeat lyric, centered on repeated word's node
+    this._accumCircles = []
+    this._accumTimer   = 0
+    this._accumActive  = false
+    this._accumNodeX   = 0
+    this._accumNodeY   = 0
+
     // Beat effects
     this._pings      = []   // A: sonar rings  — driven by bass/kick
     this._edgePulses = []   // B: edge signals — driven by treble (continuous)
@@ -343,6 +350,33 @@ export class DataOverlay {
   }
 
   setSubtitle(text) { this._lastActiveWords = text; this.setActiveLine(text) }
+
+  // factor 0-1: repeat intensity. line = raw lyric text to find repeated word's node.
+  setRepeat(factor, line) {
+    if (factor > 0 && !this._accumActive && line) {
+      // Find the most-repeated word in this line
+      const words = line.toLowerCase().replace(/[^a-z가-힣\s]/g, '').split(/\s+/).filter(w => w.length > 1)
+      const freq = {}
+      for (const w of words) freq[w] = (freq[w] || 0) + 1
+      const repeated = Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0]
+      const node = repeated && this._nodes.find(n => n.word === repeated)
+      if (node) {
+        this._accumNodeX  = node.x
+        this._accumNodeY  = node.y
+        this._accumActive = true
+        this._accumTimer  = 0
+      }
+    }
+    if (factor === 0 && this._accumActive) {
+      this._accumActive = false
+      this._accumCircles.forEach(c => { c.fading = true })
+    }
+  }
+
+  clearAccumRings() {
+    this._accumActive = false
+    this._accumCircles.forEach(c => { c.fading = true })
+  }
 
   setActiveLine(words) {
     if (!words) return
@@ -770,6 +804,36 @@ export class DataOverlay {
         }
       }
       if (allDone) this._cascade = null
+    }
+
+    // ── Accumulation circles — centered on repeated word's node ─────────
+    if (this._accumActive) {
+      this._accumTimer -= delta
+      if (this._accumTimer <= 0) {
+        this._accumTimer = 1.1
+        const count = this._accumCircles.filter(c => !c.fading).length
+        this._accumCircles.push({
+          x: this._accumNodeX, y: this._accumNodeY,
+          r: 8, target: 24 + count * 38,
+          alpha: 0.65, fading: false,
+        })
+      }
+    }
+    // Draw + animate accumulation circles
+    this._accumCircles = this._accumCircles.filter(c => c.alpha > 0)
+    for (const c of this._accumCircles) {
+      if (c.fading) {
+        c.alpha -= delta * 2.5
+        c.r     += delta * 200
+      } else {
+        c.r = Math.min(c.target, c.r + delta * 80)
+      }
+      if (c.alpha <= 0) continue
+      ctx.beginPath()
+      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${c.alpha * 0.8})`
+      ctx.lineWidth   = 1.2
+      ctx.stroke()
     }
 
     // ── Mood color chips — right-side vertical timeline (bottom→top) ────

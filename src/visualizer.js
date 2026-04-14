@@ -384,19 +384,6 @@ export class Visualizer {
     }
     this._ringIdx = 0
 
-    // Accumulation rings — grow & hold during repeat lyric, blast on next line
-    this._accumRings = []
-    for (let i = 0; i < 8; i++) {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(1, 1.07, 64),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide })
-      )
-      ring.visible = false
-      this.scene.add(ring)
-      this._accumRings.push({ mesh: ring, active: false, scale: 0, target: 0, alpha: 0, fading: false })
-    }
-    this._accumIdx   = 0
-    this._accumTimer = 0
     this._repeatActive = false
 
     this.lyricsMode = false
@@ -441,22 +428,8 @@ export class Visualizer {
   }
 
   // factor 0-1: how much the line repeats. Spawns accumulation rings.
-  setRepeat(factor) {
-    if (factor > 0 && !this._repeatActive) {
-      this._repeatActive = true
-      this._accumTimer = 0  // spawn first ring immediately
-    }
-    if (factor === 0 && this._repeatActive) {
-      this._repeatActive = false
-      this.clearAccumRings()
-    }
-  }
-
-  clearAccumRings() {
-    this._accumRings.forEach(r => { if (r.active) r.fading = true })
-    this._accumTimer = 0
-    this._accumIdx   = 0
-  }
+  setRepeat(factor) { this._repeatActive = factor > 0 }
+  clearAccumRings() {}
 
   setShape(poseName) {
     this._layers.filter(l => l.cfg.figure).forEach(layer => {
@@ -644,36 +617,6 @@ export class Visualizer {
       r.mesh.scale.setScalar(r.scale)
       r.mesh.material.opacity = Math.max(0, r.alpha)
       if (r.alpha <= 0) { r.active = false; r.mesh.visible = false }
-    }
-
-    // Accumulation rings — spawn during repeat, hold until cleared
-    const [acr, acg, acb] = this.accentRGB
-    if (this._repeatActive) {
-      this._accumTimer -= delta
-      if (this._accumTimer <= 0) {
-        this._accumTimer = 1.1  // new ring every 1.1s
-        const idx = this._accumIdx % this._accumRings.length
-        const r = this._accumRings[idx]
-        this._accumIdx++
-        r.active = true; r.fading = false
-        r.scale = 0.05
-        r.target = 0.6 + idx * 0.55  // each ring bigger
-        r.alpha = 0.5
-        r.mesh.visible = true
-        r.mesh.material.color.setRGB(acr/255, acg/255, acb/255)
-      }
-    }
-    for (const r of this._accumRings) {
-      if (!r.active) continue
-      if (r.fading) {
-        r.alpha -= delta * 3.0
-        r.scale += delta * 2.0  // blast outward
-        if (r.alpha <= 0) { r.active = false; r.mesh.visible = false; continue }
-      } else {
-        r.scale = Math.min(r.target, r.scale + delta * 1.2)
-      }
-      r.mesh.scale.setScalar(r.scale)
-      r.mesh.material.opacity = Math.max(0, r.alpha)
     }
 
     // Particle uniforms

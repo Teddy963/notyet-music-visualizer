@@ -177,7 +177,7 @@ function launchVisualizer(audioSource) {
     _lastLine = ''
     overlay.setSubtitle('')
     figureRenderer.setActiveLine('')
-    visualizer.clearAccumRings()
+    overlay.clearAccumRings()
     overlay.setTrack(track.name)
     lyricGraph.setTrack(track.name)
     figureRenderer.setRandomShape()
@@ -243,7 +243,7 @@ function launchVisualizer(audioSource) {
         const mood = _moodMap?.[result.idx] ?? null
         const repeatFactor = detectRepeatFactor(result.words)
         visualizer.setLyricLine(result.words, mood)
-        visualizer.setRepeat(repeatFactor)
+        overlay.setRepeat(repeatFactor, result.words)
         overlay.setLineMood(mood)
         overlay.setSubtitle(result.words)
         figureRenderer.setActiveLine(result.words)
