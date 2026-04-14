@@ -212,7 +212,13 @@ function generatePose(name, count) {
       else               { const s=t<0.815?-1:1; p=randEllipsoid(0.1,0.48,0.1); p[0]+=s*0.12; p[1]-=0.25 }
     }
     else if (name === 'dispersed') {
-      p = randSphere(2.0 + Math.random() * 2.0)
+      // Flat random spread across full screen — no limb-brightening ring
+      const z = (Math.random() - 0.5) * 4.0
+      p = [
+        (Math.random() - 0.5) * 12.0,
+        (Math.random() - 0.5) * 7.0,
+        z,
+      ]
     }
     else if (name === 'contracted') {
       p = randSphere(0.5 + Math.random() * 0.3)
