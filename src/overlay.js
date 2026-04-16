@@ -354,8 +354,8 @@ export class DataOverlay {
       const hue = Math.round(mood.hue)
       if (this._lastMoodHue !== hue) {
         this._lastMoodHue = hue
-        this._moodChips.push({ r: this._tr, g: this._tg, b: this._tb, born: 0 })
-        if (this._moodChips.length > 16) this._moodChips.shift()
+        this._moodChips.push({ r: this._tr, g: this._tg, b: this._tb, born: 0, energy: mood.energy ?? 0.5 })
+        if (this._moodChips.length > 10) this._moodChips.shift()
       }
     } else {
       this._moodColor = false  // fall back to visualizer accent
@@ -977,27 +977,36 @@ export class DataOverlay {
     }
     ctx.restore()
 
-    // ── Mood color chips — top-left, 2 rows, stacking right ────────────
+    // ── Mood garden — top-left, 2 rows of dots, stacking right ─────────
     if (this._moodChips.length > 0) {
       const total  = this._moodChips.length
-      const chipW  = 18, chipH = 7, chipGap = 3
-      const baseX  = 20   // left edge
-      const baseY  = 20   // top edge
+      const gap    = 14   // center-to-center spacing
+      const baseX  = 24
+      const baseY  = 22
       this._moodChips.forEach((chip, i) => {
-        chip.born = Math.min(1, (chip.born || 0) + delta * 3)
+        chip.born = Math.min(1, (chip.born || 0) + delta * 2.5)
         const isNewest = i === total - 1
-        const ageFade  = 0.25 + (i / total) * 0.65
+        const ageFade  = 0.2 + (i / total) * 0.7
         const a        = ageFade * chip.born
         const col = Math.floor(i / 2)
         const row = i % 2
-        const cx = baseX + col * (chipW + chipGap)
-        const cy = baseY + row * (chipH + chipGap)
+        const cx = baseX + col * gap
+        const cy = baseY + row * gap
+        const r  = 3.5 + (chip.energy ?? 0.5) * 3.0   // 3.5 – 6.5 px
+        // Soft glow
+        const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 2.2)
+        grd.addColorStop(0, `rgba(${chip.r},${chip.g},${chip.b},${a * 0.35})`)
+        grd.addColorStop(1, `rgba(${chip.r},${chip.g},${chip.b},0)`)
+        ctx.beginPath(); ctx.arc(cx, cy, r * 2.2, 0, Math.PI * 2)
+        ctx.fillStyle = grd; ctx.fill()
+        // Solid dot
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2)
         ctx.fillStyle = `rgba(${chip.r},${chip.g},${chip.b},${a})`
-        ctx.fillRect(cx, cy, chipW, chipH)
+        ctx.fill()
         if (isNewest) {
-          ctx.strokeStyle = `rgba(${chip.r},${chip.g},${chip.b},${a * 0.7})`
-          ctx.lineWidth = 0.5
-          ctx.strokeRect(cx, cy, chipW, chipH)
+          ctx.beginPath(); ctx.arc(cx, cy, r + 2.5, 0, Math.PI * 2)
+          ctx.strokeStyle = `rgba(${chip.r},${chip.g},${chip.b},${a * 0.45})`
+          ctx.lineWidth = 0.8; ctx.stroke()
         }
       })
     }
