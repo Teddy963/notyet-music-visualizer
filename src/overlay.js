@@ -355,7 +355,6 @@ export class DataOverlay {
       if (this._lastMoodHue !== hue) {
         this._lastMoodHue = hue
         this._moodChips.push({ r: this._tr, g: this._tg, b: this._tb, born: 0, energy: mood.energy ?? 0.5 })
-        if (this._moodChips.length > 10) this._moodChips.shift()
       }
     } else {
       this._moodColor = false  // fall back to visualizer accent
