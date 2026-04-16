@@ -46,7 +46,11 @@ Rules:
       }),
     })
 
-    if (!res.ok) { console.warn('[mood] API error', res.status); return null }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '')
+      console.warn('[mood] API error', res.status, errBody)
+      return null
+    }
 
     const data = await res.json()
     const text = data.content?.[0]?.text ?? ''
