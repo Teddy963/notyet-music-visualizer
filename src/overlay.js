@@ -410,13 +410,8 @@ export class DataOverlay {
     }
 
     // Determine token set + per-token repeat count for this line
-    let lineTokens
-    if (this._pendingKeywords) {
-      lineTokens = this._pendingKeywords.map(w => w.toLowerCase().replace(/[^a-z가-힣']/g, ''))
-      this._pendingKeywords = null
-    } else {
-      lineTokens = tokenize(words)
-    }
+    this._pendingKeywords = null
+    const lineTokens = tokenize(words)
     const tokenSet = new Set(lineTokens)
 
     // Cross-line continuity: detect words shared with previous line → spawn beat-driven rings
