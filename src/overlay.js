@@ -977,24 +977,27 @@ export class DataOverlay {
     }
     ctx.restore()
 
-    // ── Mood color chips — right-side vertical timeline (bottom→top) ────
+    // ── Mood color chips — top-left, 2 rows, stacking right ────────────
     if (this._moodChips.length > 0) {
-      const total   = this._moodChips.length
-      const chipW   = 28, chipH = 7, chipGap = 2
-      const baseX   = w - 52 - chipW   // align left edge with HUD
-      const baseY   = h - 52           // bottom anchor (same as HUD area)
+      const total  = this._moodChips.length
+      const chipW  = 18, chipH = 7, chipGap = 3
+      const baseX  = 20   // left edge
+      const baseY  = 20   // top edge
       this._moodChips.forEach((chip, i) => {
         chip.born = Math.min(1, (chip.born || 0) + delta * 3)
         const isNewest = i === total - 1
         const ageFade  = 0.25 + (i / total) * 0.65
         const a        = ageFade * chip.born
-        const cy = baseY - i * (chipH + chipGap)
+        const col = Math.floor(i / 2)
+        const row = i % 2
+        const cx = baseX + col * (chipW + chipGap)
+        const cy = baseY + row * (chipH + chipGap)
         ctx.fillStyle = `rgba(${chip.r},${chip.g},${chip.b},${a})`
-        ctx.fillRect(baseX, cy - chipH, chipW, chipH)
+        ctx.fillRect(cx, cy, chipW, chipH)
         if (isNewest) {
           ctx.strokeStyle = `rgba(${chip.r},${chip.g},${chip.b},${a * 0.7})`
           ctx.lineWidth = 0.5
-          ctx.strokeRect(baseX, cy - chipH, chipW, chipH)
+          ctx.strokeRect(cx, cy, chipW, chipH)
         }
       })
     }
