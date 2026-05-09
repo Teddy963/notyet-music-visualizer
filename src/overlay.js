@@ -161,6 +161,9 @@ export class DataOverlay {
     this._moodChips   = []   // [{r,g,b,born}]
     this._lastMoodHue = null
 
+    // Orbital frame
+    this._frameAngle = 0
+
     this._resize()
     window.addEventListener('resize', () => {
       this._resize()
@@ -251,12 +254,13 @@ export class DataOverlay {
         isCore, isBigram: false, isConnector, isAttach, isTitle,
         state: 'dormant', alpha: isTitle ? 0.3 : 0, activeTimer: 0,
         _nodeIdx: nodeIdx,
+        hue: wordHash(word, 5) * 360,
       }
     })
 
-    // ── Repulsion + edges ─────────────────────────────────────────────────
-    this._applyRepulsion()
+    // ── Edges first (needed for spring layout), then repulsion+spring ─────
     this._buildEdges(lines)
+    this._applyRepulsion()
   }
 
   // ── Rebuild edges from lines (shared by setLines + refineWithKeywords) ───
@@ -297,14 +301,18 @@ export class DataOverlay {
   refineWithKeywords(moodMap) {
     if (!moodMap || !this._nodes.length) return
 
-    // Collect Claude-identified keywords
+    // Collect Claude-identified keywords + their mood hues
     const kwSet = new Set()
+    const kwHue = {}
     for (const mood of Object.values(moodMap)) {
       for (const kw of (mood.keywords || [])) {
         const clean = /[가-힣]/.test(kw)
           ? stripKoParticle(kw.replace(/[^가-힣]/g, ''))
           : kw.toLowerCase().replace(/[^a-z']/g, '')
-        if (clean.length >= 2) kwSet.add(clean)
+        if (clean.length >= 2) {
+          kwSet.add(clean)
+          if (mood.hue != null && kwHue[clean] == null) kwHue[clean] = mood.hue
+        }
       }
     }
     if (!kwSet.size) return
@@ -316,6 +324,7 @@ export class DataOverlay {
         n.isCore  = true
         n.size    = Math.max(n.size, 20 + (n.freq / maxFreq) * 30)
         n.alpha   = Math.max(n.alpha, 0.4)
+        if (kwHue[n.word] != null) n.hue = kwHue[n.word]
       }
     }
 
@@ -478,7 +487,7 @@ export class DataOverlay {
     }
   }
 
-  // Spread nodes so they don't overlap — simple repulsion simulation
+  // Spread nodes so they don't overlap, then pull edge-connected nodes together
   _applyRepulsion() {
     const w   = this.canvas.width, h = this.canvas.height
     const pad = 60
@@ -486,6 +495,7 @@ export class DataOverlay {
     const n = nodes.length
     if (n < 2) return
 
+    // Phase 1: repulsion
     for (let iter = 0; iter < 160; iter++) {
       for (let i = 0; i < n; i++) {
         const a = nodes[i]
@@ -494,7 +504,7 @@ export class DataOverlay {
           const dx   = b.x - a.x
           const dy   = b.y - a.y
           const dist = Math.sqrt(dx * dx + dy * dy) || 0.1
-          const min  = a.size + b.size + 20   // desired gap between node edges
+          const min  = a.size + b.size + 20
           if (dist >= min) continue
           const push = (min - dist) / min * 0.5
           const fx   = (dx / dist) * push * min * 0.5
@@ -502,7 +512,28 @@ export class DataOverlay {
           a.x -= fx;  a.y -= fy
           b.x += fx;  b.y += fy
         }
-        // Keep within canvas
+        a.x = Math.max(pad + a.size, Math.min(w - pad - a.size, a.x))
+        a.y = Math.max(pad + a.size, Math.min(h - pad - a.size, a.y))
+      }
+    }
+
+    // Phase 2: spring attraction — pull edge-connected nodes closer
+    // Target edge length scales with node sizes so clusters are tighter for small nodes
+    const TARGET = 140
+    for (let iter = 0; iter < 80; iter++) {
+      for (const edge of this._edges) {
+        const a = nodes[edge.a], b = nodes[edge.b]
+        if (!a || !b) continue
+        const dx   = b.x - a.x
+        const dy   = b.y - a.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1
+        if (dist > TARGET) {
+          const f = (dist - TARGET) / dist * 0.10
+          a.x += dx * f;  a.y += dy * f
+          b.x -= dx * f;  b.y -= dy * f
+        }
+      }
+      for (const a of nodes) {
         a.x = Math.max(pad + a.size, Math.min(w - pad - a.size, a.x))
         a.y = Math.max(pad + a.size, Math.min(h - pad - a.size, a.y))
       }
@@ -540,6 +571,7 @@ export class DataOverlay {
   // ── Render ───────────────────────────────────────────────────────────────────
   update(audio, delta) {
     this.time += delta
+    this._frameAngle += delta * 0.04
 
     // Smooth color lerp toward target
     const ls = 1 - Math.pow(0.01, delta)
@@ -625,6 +657,29 @@ export class DataOverlay {
 
     ctx.clearRect(0, 0, w, h)
 
+    // ── Orbital frame ────────────────────────────────────────────────────
+    {
+      const fa = 0.045 + overall * 0.02
+      ctx.save()
+      ctx.translate(w * 0.5, h * 0.5)
+      ctx.lineWidth = 0.5
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${fa})`
+      ctx.save()
+      ctx.rotate(this._frameAngle)
+      ctx.beginPath()
+      ctx.ellipse(0, 0, w * 0.44, h * 0.38, 0, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${fa * 0.55})`
+      ctx.save()
+      ctx.rotate(-this._frameAngle * 0.65)
+      ctx.beginPath()
+      ctx.ellipse(w * 0.03, -h * 0.02, w * 0.35, h * 0.30, Math.PI * 0.3, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+      ctx.restore()
+    }
+
     // ── Scan line ────────────────────────────────────────────────────────
     const scanY = ((this.time * 0.09) % 1.05) * h
     const sg = ctx.createLinearGradient(0, scanY - 20, 0, scanY + 4)
@@ -646,11 +701,18 @@ export class DataOverlay {
       const eitherActive = aActive || bActive
 
       let a, lw
-      if (bothActive)        { a = 0.65 + this._beatFlash * 0.2; lw = 1.0 }
-      else if (eitherActive) { a = 0.22; lw = 0.6 }
-      else                   { a = Math.min(0.40, 0.08 * revealMult); lw = 0.4 }
+      if (bothActive)        { a = 0.70 + this._beatFlash * 0.2; lw = 1.2 }
+      else if (eitherActive) { a = 0.28; lw = 0.7 }
+      else                   { a = Math.min(0.40, 0.07 * revealMult); lw = 0.4 }
 
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${a})`
+      // Blend the two endpoint node hues for edge color
+      const [r1,g1,b1] = hslToRgb((na.hue ?? 0) / 360, eitherActive ? 0.75 : 0.55, eitherActive ? 0.62 : 0.52)
+      const [r2,g2,b2] = hslToRgb((nb.hue ?? 0) / 360, eitherActive ? 0.75 : 0.55, eitherActive ? 0.62 : 0.52)
+      const eR = Math.round((r1 + r2) / 2 * 255)
+      const eG = Math.round((g1 + g2) / 2 * 255)
+      const eB = Math.round((b1 + b2) / 2 * 255)
+
+      ctx.strokeStyle = `rgba(${eR},${eG},${eB},${a})`
       ctx.lineWidth   = lw
       ctx.beginPath(); ctx.moveTo(na.x, na.y); ctx.lineTo(nb.x, nb.y); ctx.stroke()
 
@@ -661,7 +723,7 @@ export class DataOverlay {
         const tip = nb.size + 4
         const ax = nb.x - ux * tip, ay = nb.y - uy * tip
         const px = -uy * 4
-        ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`
+        ctx.fillStyle = `rgba(${eR},${eG},${eB},${a})`
         ctx.beginPath()
         ctx.moveTo(ax - ux * 8 + px, ay - uy * 8 - ux * 4)
         ctx.lineTo(ax, ay)
@@ -711,16 +773,38 @@ export class DataOverlay {
         if (n.alpha <= 0.07) n.state = 'dormant'
       }
 
-      const beatBoost = n.state === 'active' ? this._beatFlash * 0.25 : 0
+      const beatBoost = n.state === 'active' ? this._beatFlash * 0.30 : 0
       const a = Math.min(1, n.alpha + beatBoost)
       const isActive  = n.state === 'active'
       const showLabel = isActive || n.isTitle || (n.isCore && n.alpha > 0.15) || (this._mapPinned && n.display)
 
-      ctx.lineWidth   = isActive ? 1.2 + (n.size / 48) * 0.8 : (this._mapPinned ? 0.8 : 0.5)
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${a})`
+      // Per-node color from hue
+      const nSat = (n.isConnector || n.isAttach) ? 0.20 : 0.82
+      const nLit = isActive ? 0.70 : (n.isCore ? 0.58 : 0.48)
+      const [nr, ng, nb_] = hslToRgb((n.hue ?? 0) / 360, nSat, nLit)
+      const nR = Math.round(nr * 255), nG = Math.round(ng * 255), nB = Math.round(nb_ * 255)
+
+      ctx.lineWidth   = isActive ? 1.5 + (n.size / 40) * 0.8 : (this._mapPinned ? 0.8 : 0.5)
+      ctx.strokeStyle = `rgba(${nR},${nG},${nB},${a})`
+
+      // Glow on active nodes
+      if (isActive) {
+        ctx.shadowBlur  = 12 + n.size * 0.45
+        ctx.shadowColor = `hsl(${n.hue ?? 0},85%,65%)`
+      }
 
       if (n.type === 'circle') {
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.size, 0, Math.PI * 2); ctx.stroke()
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.size, 0, Math.PI * 2)
+        // Fill: active = semi-fill, core = very faint fill
+        if (isActive) {
+          ctx.fillStyle = `rgba(${nR},${nG},${nB},${a * 0.16})`
+          ctx.fill()
+        } else if (n.isCore && n.alpha > 0.2) {
+          ctx.fillStyle = `rgba(${nR},${nG},${nB},${a * 0.05})`
+          ctx.fill()
+        }
+        ctx.stroke()
+        if (isActive) { ctx.shadowBlur = 0 }
 
         if (showLabel) {
           if (isActive) {
@@ -732,25 +816,25 @@ export class DataOverlay {
             ctx.stroke()
             ctx.globalAlpha = 1
             ctx.beginPath(); ctx.arc(n.x, n.y, 2, 0, Math.PI * 2)
-            ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`; ctx.fill()
+            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`; ctx.fill()
 
             const goRight = n.x < w * 0.62
             const fz  = 9 + Math.round(n.size / 12)
             const dir = goRight ? 1 : -1
             const ax  = goRight ? n.x + n.size : n.x - n.size
             const ex  = ax + dir * (28 + n.size * 0.4)
-            ctx.lineWidth = 0.9; ctx.strokeStyle = `rgba(${cr},${cg},${cb},${a * 0.7})`
+            ctx.lineWidth = 0.9; ctx.strokeStyle = `rgba(${nR},${nG},${nB},${a * 0.7})`
             ctx.beginPath(); ctx.moveTo(ax, n.y); ctx.lineTo(ex, n.y); ctx.stroke()
             ctx.beginPath()
             ctx.moveTo(ex - dir * 7, n.y - 4); ctx.lineTo(ex, n.y); ctx.lineTo(ex - dir * 7, n.y + 4)
             ctx.stroke()
             ctx.font = `bold ${fz}px Arial, sans-serif`
-            ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`
+            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
             ctx.textAlign = goRight ? 'left' : 'right'
             ctx.fillText(n.display, ex + dir * 6, n.y + fz * 0.38)
           } else {
             ctx.font = `300 9px 'Courier New', monospace`
-            ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`
+            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
             ctx.textAlign = 'center'
             ctx.fillText(n.display, n.x, n.y + n.size + 12)
           }
@@ -760,19 +844,24 @@ export class DataOverlay {
       } else {
         ctx.save(); ctx.translate(n.x, n.y); ctx.rotate(n.rot)
         const half = n.size * 0.7, tall = n.size * 1.1
+        if (isActive) {
+          ctx.fillStyle = `rgba(${nR},${nG},${nB},${a * 0.14})`
+          ctx.fillRect(-half, -tall * 0.5, half * 2, tall)
+        }
         ctx.strokeRect(-half, -tall * 0.5, half * 2, tall)
         ctx.restore()
+        if (isActive) { ctx.shadowBlur = 0 }
 
         if (showLabel) {
           if (isActive) {
             const fz = 9 + Math.round(n.size / 14)
             ctx.font = `bold ${fz}px Arial, sans-serif`
-            ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`
+            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
             ctx.textAlign = 'center'
             ctx.fillText(n.display, n.x, n.y + tall * 0.5 + fz + 4)
           } else {
             ctx.font = `300 9px 'Courier New', monospace`
-            ctx.fillStyle = `rgba(${cr},${cg},${cb},${a})`
+            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
             ctx.textAlign = 'center'
             ctx.fillText(n.display, n.x, n.y + tall * 0.5 + 14)
           }
