@@ -95,6 +95,26 @@ function hslToRgb(h, s, l) {
   return [hue(p,q,h+1/3), hue(p,q,h), hue(p,q,h-1/3)]
 }
 
+// ── Poincaré disk helpers ─────────────────────────────────────────────────
+// Move `focus` to origin: T_focus(z) = (z - focus) / (1 - conj(focus)·z)
+function poincareMobius(z, focus) {
+  const [zx,zy] = z, [fx,fy] = focus
+  const nx = zx-fx, ny = zy-fy
+  const cdx = fx*zx + fy*zy, cdy = fx*zy - fy*zx
+  const dx = 1-cdx, dy = -cdy
+  const d2 = dx*dx + dy*dy || 1e-9
+  return [(nx*dx + ny*dy)/d2, (ny*dx - nx*dy)/d2]
+}
+// Move localPos from parent-centered frame to world frame (inverse Möbius)
+function poincareFromLocal(local, parent) {
+  const [lx,ly] = local, [px,py] = parent
+  const nx = lx+px, ny = ly+py
+  const cdx = px*lx + py*ly, cdy = px*ly - py*lx
+  const dx = 1+cdx, dy = cdy
+  const d2 = dx*dx + dy*dy || 1e-9
+  return [(nx*dx + ny*dy)/d2, (ny*dx - nx*dy)/d2]
+}
+
 // Stable deterministic hash → [0, 1)
 function wordHash(word, salt = 0) {
   let h = salt * 0x9e3779b9
@@ -161,10 +181,11 @@ export class DataOverlay {
     this._moodChips   = []   // [{r,g,b,born}]
     this._lastMoodHue = null
 
-    // 3D sphere rotation
-    this._rotY    = 0
-    this._rotX    = 0
-    this._sorted3d = []
+    // Hyperbolic focus (Poincaré disk)
+    this._focus       = [0, 0]
+    this._targetFocus = [0, 0]
+    this._stRoot      = 0
+    this._stChildren  = {}
 
     this._resize()
     window.addEventListener('resize', () => {
@@ -260,17 +281,9 @@ export class DataOverlay {
       }
     })
 
-    // ── Build edges, then assign Fibonacci sphere positions ───────────────
+    // ── Build edges → hyperbolic layout ──────────────────────────────────
     this._buildEdges(lines)
-    const total = this._nodes.length
-    this._nodes.forEach((n, i) => {
-      const t     = (i + 0.5) / total
-      const phi   = Math.acos(Math.max(-1, Math.min(1, 1 - 2 * t)))
-      const theta = Math.PI * (1 + Math.sqrt(5)) * i
-      n.x3d = Math.sin(phi) * Math.cos(theta)
-      n.y3d = Math.sin(phi) * Math.sin(theta)
-      n.z3d = Math.cos(phi)
-    })
+    this._computeHyperbolicLayout()
   }
 
   // ── Rebuild edges from lines (shared by setLines + refineWithKeywords) ───
@@ -483,6 +496,15 @@ export class DataOverlay {
         }
       }
     })
+    // Update hyperbolic focus toward centroid of active nodes
+    const actNodes = this._nodes.filter(n => n.state === 'active')
+    if (actNodes.length) {
+      const hcx = actNodes.reduce((s,n) => s + (n.hx||0), 0) / actNodes.length
+      const hcy = actNodes.reduce((s,n) => s + (n.hy||0), 0) / actNodes.length
+      const hl  = Math.sqrt(hcx*hcx + hcy*hcy)
+      this._targetFocus = hl > 0.88 ? [hcx*0.88/hl, hcy*0.88/hl] : [hcx, hcy]
+    }
+
     // Neighbors: activate at half brightness
     for (const edge of this._edges) {
       const aIsActive = activeIdxs.has(edge.a), bIsActive = activeIdxs.has(edge.b)
@@ -495,6 +517,70 @@ export class DataOverlay {
         if (na && na.state === 'dormant') { na.state = 'neighbor'; na.alpha = 0 }
       }
     }
+  }
+
+  // ── Hyperbolic layout ────────────────────────────────────────────────────
+  _computeHyperbolicLayout() {
+    const nodes = this._nodes
+    if (!nodes.length) return
+
+    // Spanning tree via BFS from highest-freq root
+    const rootIdx = nodes.reduce((b, n, i) => n.freq > nodes[b].freq ? i : b, 0)
+    const adj = {}
+    for (const e of this._edges) {
+      ;(adj[e.a] = adj[e.a] || []).push(e.b)
+      ;(adj[e.b] = adj[e.b] || []).push(e.a)
+    }
+    const children = {}, visited = new Set([rootIdx]), queue = [rootIdx]
+    while (queue.length) {
+      const u = queue.shift()
+      children[u] = children[u] || []
+      for (const v of (adj[u] || [])) {
+        if (!visited.has(v)) { visited.add(v); children[u].push(v); queue.push(v) }
+      }
+    }
+    // Disconnected nodes → attach directly to root
+    nodes.forEach((_, i) => {
+      if (!visited.has(i)) { (children[rootIdx] = children[rootIdx] || []).push(i) }
+    })
+    this._stRoot = rootIdx; this._stChildren = children
+
+    // Recursive hyperbolic placement
+    const H_STEP = 0.72  // hyperbolic radius per level
+    const place = (idx, pos, parentAngle, sectorSpan) => {
+      nodes[idx].hx = pos[0]; nodes[idx].hy = pos[1]
+      const kids = children[idx] || []
+      if (!kids.length) return
+      const r_euc = Math.tanh(H_STEP / 2)
+      const span  = Math.min(sectorSpan * 0.92, Math.PI * 1.85)
+      const start = parentAngle + Math.PI - span / 2
+      kids.forEach((kid, k) => {
+        const angle = start + (k + 0.5) * span / kids.length
+        let cp = poincareFromLocal([r_euc * Math.cos(angle), r_euc * Math.sin(angle)], pos)
+        const cl = Math.sqrt(cp[0]**2 + cp[1]**2)
+        if (cl > 0.93) { cp = [cp[0]*0.93/cl, cp[1]*0.93/cl] }
+        place(kid, cp, angle, span / kids.length)
+      })
+    }
+    place(rootIdx, [0, 0], 0, Math.PI * 2)
+
+    // Assign cluster hues — each root-child subtree gets a distinct hue
+    const rootKids = children[rootIdx] || []
+    const assignHue = (idx, hue) => {
+      nodes[idx].hue = ((hue + (wordHash(nodes[idx].word, 9) - 0.5) * 35) + 360) % 360
+      for (const c of (children[idx] || [])) assignHue(c, hue)
+    }
+    rootKids.forEach((ki, k) => assignHue(ki, (k / Math.max(1, rootKids.length)) * 360))
+    nodes[rootIdx].hue = 55  // root = gold
+
+    // Override node sizes: hub = larger, leaf = smaller square
+    nodes.forEach((n, i) => {
+      const isHub = i === rootIdx || rootKids.includes(i)
+      n.size = isHub ? 14 + n.freq * 1.2 : 5 + n.freq * 0.4
+      if (!isHub) n.type = 'box'  // leaf nodes → small squares like reference
+    })
+
+    this._focus = [0, 0]; this._targetFocus = [0, 0]
   }
 
   // Spread nodes so they don't overlap, then pull edge-connected nodes together
@@ -581,8 +667,6 @@ export class DataOverlay {
   // ── Render ───────────────────────────────────────────────────────────────────
   update(audio, delta) {
     this.time += delta
-    this._rotY += delta * 0.055
-    this._rotX  = Math.sin(this.time * 0.045) * 0.22
 
     // Smooth color lerp toward target
     const ls = 1 - Math.pow(0.01, delta)
@@ -666,67 +750,35 @@ export class DataOverlay {
 
 
 
-    // ── 3D projection pass ───────────────────────────────────────────────
+    // ── Hyperbolic focus lerp + Möbius projection ────────────────────────
     {
-      const R   = Math.min(w, h) * 0.30
-      const fov = 700
-      const cosY = Math.cos(this._rotY), sinY = Math.sin(this._rotY)
-      const cosX = Math.cos(this._rotX), sinX = Math.sin(this._rotX)
-      this._cosY = cosY; this._sinY = sinY
-      this._cosX = cosX; this._sinX = sinX
-      this._R3d  = R;    this._fov3d = fov
-
-      this._sorted3d = []
+      const ls = 1 - Math.pow(0.005, delta)
+      this._focus[0] += (this._targetFocus[0] - this._focus[0]) * ls
+      this._focus[1] += (this._targetFocus[1] - this._focus[1]) * ls
+      const diskR = Math.min(w, h) * 0.43
       for (const n of this._nodes) {
-        if (n.x3d == null) continue
-        const rx = n.x3d * cosY + n.z3d * sinY
-        const ry = n.y3d
-        const rz = -n.x3d * sinY + n.z3d * cosY
-        const fx = rx
-        const fy = ry * cosX - rz * sinX
-        const fz = ry * sinX + rz * cosX
-        const sc = fov / (fz * R + fov + R)
-        n.x = w * 0.5 + fx * R * sc
-        n.y = h * 0.5 + fy * R * sc
-        n._fz         = fz
-        n._depthAlpha = 0.30 + sc * 0.70
-        this._sorted3d.push(n)
+        if (n.hx == null) { n._projAlpha = 0; continue }
+        const [px, py] = poincareMobius([n.hx, n.hy], this._focus)
+        n.x = w * 0.5 + px * diskR
+        n.y = h * 0.5 + py * diskR
+        const d = Math.sqrt(px*px + py*py)
+        n._projScale = Math.max(0.25, 1.0 - d * 0.60)
+        n._projAlpha = Math.max(0.10, 1.0 - d * 0.70)
       }
-      this._sorted3d.sort((a, b) => a._fz - b._fz)
     }
 
     ctx.clearRect(0, 0, w, h)
 
-    // ── Sphere guide circles (equator + tilted meridian) ─────────────────
+    // ── Poincaré disk boundary + inner rings ─────────────────────────────
     {
-      const R = this._R3d, fov = this._fov3d
-      const cosY = this._cosY, sinY = this._sinY
-      const cosX = this._cosX, sinX = this._sinX
-      const N  = 96
-      const fa = 0.05 + overall * 0.02
-
-      const drawCircle3d = (getPoint, alpha) => {
-        ctx.beginPath()
-        for (let i = 0; i <= N; i++) {
-          const [px3, py3, pz3] = getPoint(i / N * Math.PI * 2)
-          const rx = px3 * cosY + pz3 * sinY
-          const ry = py3
-          const rz = -px3 * sinY + pz3 * cosY
-          const fx = rx
-          const fy = ry * cosX - rz * sinX
-          const fz = ry * sinX + rz * cosX
-          const sc = fov / (fz * R + fov + R)
-          const sx = w * 0.5 + fx * R * sc
-          const sy = h * 0.5 + fy * R * sc
-          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy)
-        }
-        ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`
-        ctx.stroke()
-      }
-
-      ctx.lineWidth = 0.5
-      drawCircle3d(a => [Math.cos(a), 0, Math.sin(a)], fa)
-      drawCircle3d(a => [Math.cos(a), Math.sin(a) * 0.5, Math.sin(a) * 0.866], fa * 0.55)
+      const diskR = Math.min(w, h) * 0.43
+      ctx.lineWidth = 0.8
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.18)`
+      ctx.beginPath(); ctx.arc(w*0.5, h*0.5, diskR, 0, Math.PI*2); ctx.stroke()
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.05)`
+      ctx.lineWidth = 0.4
+      ctx.beginPath(); ctx.arc(w*0.5, h*0.5, diskR*0.65, 0, Math.PI*2); ctx.stroke()
+      ctx.beginPath(); ctx.arc(w*0.5, h*0.5, diskR*0.32, 0, Math.PI*2); ctx.stroke()
     }
 
     // ── Scan line ────────────────────────────────────────────────────────
@@ -800,7 +852,7 @@ export class DataOverlay {
     }
 
     // ── Detection nodes ──────────────────────────────────────────────────
-    const drawNodes = this._sorted3d.length > 0 ? this._sorted3d : this._nodes
+    const drawNodes = this._nodes
     for (const n of drawNodes) {
       n.activeTimer += delta
 
@@ -822,8 +874,9 @@ export class DataOverlay {
       }
 
       const beatBoost  = n.state === 'active' ? this._beatFlash * 0.30 : 0
-      const depthAlpha = n._depthAlpha ?? 1
-      const a = Math.min(1, (n.alpha + beatBoost) * depthAlpha)
+      const projAlpha  = n._projAlpha ?? 1
+      const projScale  = n._projScale ?? 1
+      const a = Math.min(1, (n.alpha + beatBoost) * projAlpha)
       const isActive  = n.state === 'active'
       const showLabel = isActive || n.isTitle || (n.isCore && n.alpha > 0.15) || (this._mapPinned && n.display)
 
@@ -833,17 +886,18 @@ export class DataOverlay {
       const [nr, ng, nb_] = hslToRgb((n.hue ?? 0) / 360, nSat, nLit)
       const nR = Math.round(nr * 255), nG = Math.round(ng * 255), nB = Math.round(nb_ * 255)
 
-      ctx.lineWidth   = isActive ? 1.5 + (n.size / 40) * 0.8 : (this._mapPinned ? 0.8 : 0.5)
+      const drawSize = Math.max(2, n.size * projScale)
+      ctx.lineWidth   = isActive ? 1.5 + (drawSize / 40) * 0.8 : (this._mapPinned ? 0.8 : 0.5)
       ctx.strokeStyle = `rgba(${nR},${nG},${nB},${a})`
 
       // Glow on active nodes
       if (isActive) {
-        ctx.shadowBlur  = 12 + n.size * 0.45
+        ctx.shadowBlur  = 10 + drawSize * 0.5
         ctx.shadowColor = `hsl(${n.hue ?? 0},85%,65%)`
       }
 
       if (n.type === 'circle') {
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.size, 0, Math.PI * 2)
+        ctx.beginPath(); ctx.arc(n.x, n.y, drawSize, 0, Math.PI * 2)
         // Fill: active = semi-fill, core = very faint fill
         if (isActive) {
           ctx.fillStyle = `rgba(${nR},${nG},${nB},${a * 0.16})`
@@ -857,7 +911,7 @@ export class DataOverlay {
 
         if (showLabel) {
           if (isActive) {
-            const ch = n.size * 0.5
+            const ch = drawSize * 0.5
             ctx.globalAlpha = a * 0.45
             ctx.beginPath()
             ctx.moveTo(n.x - ch, n.y); ctx.lineTo(n.x + ch, n.y)
@@ -868,10 +922,10 @@ export class DataOverlay {
             ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`; ctx.fill()
 
             const goRight = n.x < w * 0.62
-            const fz  = 9 + Math.round(n.size / 12)
+            const fz  = Math.max(7, 9 + Math.round(drawSize / 12))
             const dir = goRight ? 1 : -1
-            const ax  = goRight ? n.x + n.size : n.x - n.size
-            const ex  = ax + dir * (28 + n.size * 0.4)
+            const ax  = goRight ? n.x + drawSize : n.x - drawSize
+            const ex  = ax + dir * (28 + drawSize * 0.4)
             ctx.lineWidth = 0.9; ctx.strokeStyle = `rgba(${nR},${nG},${nB},${a * 0.7})`
             ctx.beginPath(); ctx.moveTo(ax, n.y); ctx.lineTo(ex, n.y); ctx.stroke()
             ctx.beginPath()
@@ -892,7 +946,7 @@ export class DataOverlay {
 
       } else {
         ctx.save(); ctx.translate(n.x, n.y); ctx.rotate(n.rot)
-        const half = n.size * 0.7, tall = n.size * 1.1
+        const half = drawSize * 0.7, tall = drawSize * 1.1
         if (isActive) {
           ctx.fillStyle = `rgba(${nR},${nG},${nB},${a * 0.14})`
           ctx.fillRect(-half, -tall * 0.5, half * 2, tall)
@@ -903,7 +957,7 @@ export class DataOverlay {
 
         if (showLabel) {
           if (isActive) {
-            const fz = 9 + Math.round(n.size / 14)
+            const fz = Math.max(7, 9 + Math.round(drawSize / 14))
             ctx.font = `bold ${fz}px Arial, sans-serif`
             ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
             ctx.textAlign = 'center'
