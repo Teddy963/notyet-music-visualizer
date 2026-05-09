@@ -69,10 +69,11 @@ function tokenize(text) {
     if (cleaned.length < 1) return null
     // Allow single-char: known connectors (e.g. "i") OR original uppercase letter (e.g. "D", "E")
     if (cleaned.length < 2 && !CONNECTOR_WORDS.has(cleaned)) {
-      if (!isKorean && /^[A-Z]$/.test(raw.replace(/[^a-zA-Z]/g, ''))) { /* keep */ }
+      if (isKorean && cleaned.length >= 1) { /* keep single-char Korean particles */ }
+      else if (!isKorean && /^[A-Z]$/.test(raw.replace(/[^a-zA-Z]/g, ''))) { /* keep */ }
       else return null
     }
-    if (isKorean ? KO_STOPWORDS.has(cleaned) : STOPWORDS.has(cleaned)) return null
+    if (!isKorean && STOPWORDS.has(cleaned)) return null
     if (!isKorean && isFiller(cleaned)) return null
     return cleaned
   }).filter(Boolean)
