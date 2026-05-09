@@ -242,40 +242,24 @@ export class DataOverlay {
       }
     }
 
-    const sorted   = Object.entries(freq).sort((a, b) => b[1] - a[1])
-    const maxFreq  = sorted[0]?.[1] ?? 1
-    const coreThr  = Math.max(2, Math.ceil(maxFreq * 0.4))
+    const sorted     = Object.entries(freq).sort((a, b) => b[1] - a[1])
+    const maxFreq    = sorted[0]?.[1] ?? 1
     const titleWords = this._titleWords ?? new Set()
 
-    const totalNodes = sorted.length
     this._nodes = sorted.map(([word, count], nodeIdx) => {
-      const h1 = wordHash(word, 1), h2 = wordHash(word, 2)
       const h3 = wordHash(word, 3), h4 = wordHash(word, 4)
-      const isConnector = CONNECTOR_WORDS.has(word)
-      const isAttach    = ATTACH_WORDS.has(word)
-      const isTitle     = titleWords.has(word)
-      const isBuildup   = buildupWords.has(word)
-      const isCore      = isTitle || isBuildup || (!isConnector && !isAttach && count >= coreThr)
-      const type        = (isConnector || isAttach) ? 'circle' : (h3 > 0.45 ? 'circle' : 'box')
-      const freqScale   = (isConnector || isAttach) ? 0 : Math.log2(count + 1) / Math.log2(maxFreq + 1)
-      const baseSize    = isAttach ? 4 + h4 * 3
-                        : isConnector ? 5 + h4 * 4
-                        : 8 + h4 * 10
-      const freqBoost   = freqScale * 36
-      const titleBoost  = isTitle ? 18 + (count / maxFreq) * 20 : 0
-      const buildupBoost = isBuildup ? 22 : 0
-      // Golden ratio lattice blended with word hash — breaks char-set clustering
-      const gx = (nodeIdx * 0.618034) % 1
-      const gy = (nodeIdx * 0.381966) % 1
-      const px = h1 * 0.45 + gx * 0.55
-      const py = h2 * 0.45 + gy * 0.55
+      const isTitle = titleWords.has(word)
+      // Uniform freq-based size — no type classification
+      const freqScale = Math.log2(count + 1) / Math.log2(maxFreq + 1)
+      const size = 5 + h4 * 4 + freqScale * 28 + (isTitle ? 14 : 0)
+      const type = h3 > 0.5 ? 'circle' : 'box'
       return {
         word, parts: [word], display: word.toUpperCase(),
-        x: pad + px * (w - pad * 2), y: pad + py * (h - pad * 2),
-        type, size: baseSize + freqBoost + titleBoost + buildupBoost,
-        rot: (h3 - 0.5) * 0.6, freq: count,
-        isCore, isBigram: false, isConnector, isAttach, isTitle,
-        state: 'dormant', alpha: isTitle ? 0.3 : 0, activeTimer: 0,
+        x: w * 0.5, y: h * 0.5,
+        type, size, rot: (h3 - 0.5) * 0.4, freq: count,
+        isCore: isTitle || count >= Math.max(2, maxFreq * 0.35),
+        isTitle, isConnector: false, isAttach: false,
+        state: 'dormant', alpha: 0, activeTimer: 0,
         _nodeIdx: nodeIdx,
         hue: wordHash(word, 5) * 360,
       }
@@ -310,13 +294,13 @@ export class DataOverlay {
           if (!edgeSet.has(key)) { edgeSet.add(key); this._edges.push({ a, b }) }
         }
     }
-    if (this._edges.length > 55) {
+    if (this._edges.length > 300) {
       this._edges = this._edges
         .sort((e, f) => {
-          const wa = (this._nodes[e.a].isCore?1:0) + (this._nodes[e.b].isCore?1:0)
-          const wb = (this._nodes[f.a].isCore?1:0) + (this._nodes[f.b].isCore?1:0)
+          const wa = this._nodes[e.a].freq + this._nodes[e.b].freq
+          const wb = this._nodes[f.a].freq + this._nodes[f.b].freq
           return wb - wa
-        }).slice(0, 55)
+        }).slice(0, 300)
     }
   }
 
@@ -857,18 +841,14 @@ export class DataOverlay {
       n.activeTimer += delta
 
       if (n.state === 'dormant') {
-        const target = n.isTitle    ? 0.55
-                     : n.isCore     ? 0.32
-                     : n.isConnector? 0.16
-                     : n.isAttach   ? 0.13
-                     :                0.22
+        const target = n.isTitle ? 0.55 : n.isCore ? 0.32 : 0.20
         n.alpha += (target - n.alpha) * Math.min(1, delta * 1.8)
       } else if (n.state === 'active') {
         n.alpha = Math.min(0.92, n.alpha + delta * 4)
       } else if (n.state === 'neighbor') {
         n.alpha = Math.min(0.35, n.alpha + delta * 3)
       } else if (n.state === 'fading') {
-        const floor = (n.isConnector || n.isAttach) ? 0 : 0.04 + (n.size / 48) * 0.03
+        const floor = 0.04 + (n.size / 80) * 0.03
         n.alpha = Math.max(floor, n.alpha - delta * 1.0)
         if (n.alpha <= 0.07) n.state = 'dormant'
       }
