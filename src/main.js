@@ -5,6 +5,7 @@ import { AudioSync } from './audioSync.js'
 import { Visualizer } from './visualizer.js'
 import { DataOverlay } from './overlay.js'
 import { FigureRenderer } from './figureRenderer.js'
+import { generatePoster } from './posterGenerator.js'
 
 const KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -40,6 +41,10 @@ invertBtn.title = 'Invert Colors'
 const captureBtn = el('button', 'capture-btn', '⬡')
 captureBtn.id = 'capture-btn'
 captureBtn.title = 'Capture (⌘S)'
+
+const posterBtn = el('button', 'capture-btn', '⊞')
+posterBtn.id = 'poster-btn'
+posterBtn.title = 'Poster'
 
 const analysisToggle = el('button', 'analysis-toggle', '◈')
 analysisToggle.id = 'analysis-toggle'
@@ -77,6 +82,7 @@ app.appendChild(nowPlaying)
 app.appendChild(invertBtn)
 app.appendChild(mapToggle)
 app.appendChild(captureBtn)
+app.appendChild(posterBtn)
 app.appendChild(analysisToggle)
 app.appendChild(analysisPanel)
 
@@ -91,8 +97,24 @@ mapToggle.addEventListener('mouseleave', () => {
   overlayRef?.setMapPinned(false)
 })
 
-// ── Capture button ──
-captureBtn.addEventListener('click', captureVisuals)
+// ── Capture button — short press: screenshot, long press (500ms): poster ──
+let _capturePressTimer = null
+captureBtn.addEventListener('pointerdown', () => {
+  _capturePressTimer = setTimeout(() => {
+    _capturePressTimer = null
+    capturePoster()
+  }, 500)
+})
+captureBtn.addEventListener('pointerup', () => {
+  if (_capturePressTimer) {
+    clearTimeout(_capturePressTimer)
+    _capturePressTimer = null
+    captureVisuals()
+  }
+})
+captureBtn.addEventListener('pointerleave', () => {
+  if (_capturePressTimer) { clearTimeout(_capturePressTimer); _capturePressTimer = null }
+})
 
 // ── Invert ──
 let _inverted = false
@@ -151,9 +173,14 @@ async function startSpotifyMode() {
   }
 }
 
+// ── Track state ──
+let _currentTrack    = null
+let _currentFeatures = null
+let _currentAnalysis = null
+
 // ── Lyrics state ──
 let _lyrics       = null
-let _moodMap      = null   // index → mood params from Claude
+let _moodMap      = null
 let _lyricsPos    = 0
 let _lyricsFetch  = performance.now()
 let _lyricsActive = false
@@ -171,13 +198,16 @@ function _findCurrentLine(posMs) {
   return current ? { words: current.words, idx } : null
 }
 
-function _startPositionPolling() {
+function _startPositionPolling(onPause) {
   async function poll() {
     try {
       const state = await getPlaybackState()
       if (state?.progress_ms != null) {
         _lyricsPos   = state.progress_ms
         _lyricsFetch = performance.now()
+        const playing = !!state.is_playing
+        if (!playing && _lastLine) onPause?.()
+        _lyricsActive = playing && !!_lyrics?.length
       }
     } catch {}
   }
@@ -206,12 +236,17 @@ function launchVisualizer(audioSource) {
   nowPlaying.style.display     = 'block'
   mapToggle.style.display      = 'flex'
   captureBtn.style.display     = 'flex'
+  posterBtn.style.display      = 'flex'
   analysisToggle.style.display = 'flex'
 
   document.getElementById('skip-prev').addEventListener('click', skipToPrevious)
   document.getElementById('skip-next').addEventListener('click', skipToNext)
 
-  _startPositionPolling()
+  _startPositionPolling(() => {
+    overlay.setSubtitle('')
+    figureRenderer.setActiveLine('')
+    _lastLine = ''
+  })
 
   let _currentTrackId = null
 
@@ -219,25 +254,33 @@ function launchVisualizer(audioSource) {
     const trackId = track.id ?? track.name
     _currentTrackId = trackId
 
+    _currentTrack    = track
+    _currentFeatures = features  ?? _currentFeatures
+    _currentAnalysis = analysis  ?? _currentAnalysis
+
     nowPlaying.querySelector('.track').textContent  = track.name
     nowPlaying.querySelector('.artist').textContent = track.artists.map(a => a.name).join(', ')
 
-    // Clear previous song state
+    // Clear previous song state immediately
     _lyrics = null
+    _moodMap = null
     _lyricsActive = false
     _lastLine = ''
+    _lastLineIdx = -1
     overlay.setSubtitle('')
-    figureRenderer.setActiveLine('')
+    overlay.setLines([])
     overlay.clearAccumRings()
     overlay.setTrack(track.name)
+    figureRenderer.setActiveLine('')
+    figureRenderer.setWords([])
     figureRenderer.setAlbumArt(track.album?.images?.[0]?.url ?? null)
+    visualizer.resetMood()
 
     const lines = await getLyrics(track)
     // Guard: ignore if a newer track has already taken over
     if (_currentTrackId !== trackId) return
 
     console.log('[lyrics]', track.name, lines ? `${lines.length} lines` : 'not found')
-    _moodMap = null
     if (lines?.length) {
       _lyrics = lines
       _lyricsActive = true
@@ -361,6 +404,25 @@ function infoHTML(id, label, defaultVal) {
       <span class="info-key">${label}</span>
       <span class="info-value" id="info-val-${id}">${defaultVal}</span>
     </div>`
+}
+
+posterBtn.addEventListener('click', () => capturePoster())
+
+// ── Poster ──
+async function capturePoster() {
+  captureBtn.classList.add('flash')
+  setTimeout(() => captureBtn.classList.remove('flash'), 300)
+  const poster = await generatePoster({
+    track:    _currentTrack,
+    features: _currentFeatures,
+    moodMap:  _moodMap,
+    lyrics:   _lyrics,
+    analysis: _currentAnalysis,
+  })
+  const a = document.createElement('a')
+  a.download = `notyet-poster-${Date.now()}.png`
+  a.href = poster.toDataURL('image/png')
+  a.click()
 }
 
 // ── Capture ──

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Poster Test</title>
+  <style>
+    body { margin: 0; background: #222; display: flex; flex-direction: column; align-items: center; padding: 32px; gap: 16px; font-family: sans-serif; }
+    canvas { max-width: 480px; width: 100%; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
+    .controls { display: flex; gap: 12px; }
+    button { background: #444; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    button:hover { background: #555; }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <button onclick="renderWith('lyrics')">가사 있는 곡</button>
+    <button onclick="renderWith('no-lyrics')">가사 없는 곡 (instrumental)</button>
+    <button onclick="downloadPoster()">⬇ 다운로드</button>
+  </div>
+  <canvas id="preview"></canvas>
+
+<script type="module">
+import { generatePoster } from './src/posterGenerator.js'
+
+const MOCK_LYRICS = [
+  "달려가는 저 바람처럼",
+  "너를 향해 달려가",
+  "이 세상 끝까지라도",
+  "멈추지 않을게",
+  "빛나는 별들 사이로",
+  "네 이름을 불러봐",
+  "아무것도 두렵지 않아",
+  "네가 있으니까",
+  "달려가 달려가",
+  "멈추지 마",
+  "우리 함께라면",
+  "괜찮아 괜찮아",
+  "손을 잡아줘",
+  "이 순간 영원히",
+  "기억할게 기억할게",
+  "너와 나의 이야기",
+]
+
+const MOCK_MOOD_MAP = {}
+MOCK_LYRICS.forEach((_, i) => {
+  const t = i / MOCK_LYRICS.length
+  MOCK_MOOD_MAP[i] = {
+    hue:      200 + Math.sin(t * Math.PI * 2) * 100,
+    sat:      60 + Math.random() * 20,
+    energy:   0.4 + Math.sin(t * Math.PI) * 0.5,
+    spread:   0.5,
+    speed:    0.5,
+    keywords: [MOCK_LYRICS[i].split(' ')[0], MOCK_LYRICS[i].split(' ')[1]].filter(Boolean),
+  }
+})
+
+const MOCK_TRACK = {
+  name: 'Running To You',
+  artists: [{ name: 'Notyet' }],
+  // album art for color extraction test — swap to any public image URL
+  album: { images: [{ url: 'https://i.scdn.co/image/ab67616d0000b2737359994525d219f64872d3b1' }] },
+}
+
+const MOCK_FEATURES = {
+  energy:          0.82,
+  valence:         0.64,
+  tempo:           128,
+  key:             6,   // F#
+  mode:            1,   // Major
+  danceability:    0.74,
+  acousticness:    0.12,
+  instrumentalness:0.0,
+  speechiness:     0.05,
+}
+
+let _currentCanvas = null
+
+window.renderWith = async function(mode) {
+  const poster = await generatePoster({
+    track:    MOCK_TRACK,
+    features: MOCK_FEATURES,
+    moodMap:  mode === 'lyrics' ? MOCK_MOOD_MAP : null,
+    lyrics:   mode === 'lyrics' ? MOCK_LYRICS.map(w => ({ words: w })) : null,
+  })
+  _currentCanvas = poster
+  const preview = document.getElementById('preview')
+  preview.width  = poster.width
+  preview.height = poster.height
+  preview.getContext('2d').drawImage(poster, 0, 0)
+}
+
+window.downloadPoster = function() {
+  if (!_currentCanvas) return
+  const a = document.createElement('a')
+  a.download = `notyet-poster-test-${Date.now()}.png`
+  a.href = _currentCanvas.toDataURL('image/png')
+  a.click()
+}
+
+// 기본 렌더
+renderWith('lyrics')  // async — poster appears after album art is fetched
+</script>
+</body>
+</html>

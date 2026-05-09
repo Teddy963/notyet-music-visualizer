@@ -33,8 +33,6 @@ const particleVert = NOISE_GLSL + `
   attribute float aSize;
   attribute vec3  aColor;
   attribute float aOffset;
-  attribute float aRadius;
-  attribute vec3  aTarget;
 
   uniform float uTime;
   uniform float uBeat;
@@ -45,17 +43,22 @@ const particleVert = NOISE_GLSL + `
   uniform float uRotSpeed;
   uniform float uSpread;
   uniform float uSpeed;
-  uniform float uMorph;
   uniform float uNoiseScale;
   uniform float uAlphaMult;
+  uniform vec3  uDriftDir;
+  uniform float uDriftSpeed;
+  uniform float uDriftRange;
 
   varying vec3  vColor;
   varying float vAlpha;
 
   void main(){
     vColor = aColor;
-    // Morph between sphere position and target pose
-    vec3 pos = mix(position, aTarget, uMorph);
+    vec3 pos = position;
+
+    // Scene drift — each particle cycles through drift direction at its own phase
+    float driftPhase = fract(aOffset * 0.15915 + uTime * uDriftSpeed);
+    pos += uDriftDir * (driftPhase * uDriftRange - uDriftRange * 0.5);
 
     // Spread: contract (0) ↔ expand (1) — scales the whole form
     float spreadScale = 0.78 + uSpread * 0.44;
@@ -150,6 +153,17 @@ const glitchFrag = `
   }
 `
 
+// ── Scene drift params per mood type ─────────────────────────────────────────
+const SCENE_PARAMS = {
+  default: { dir:[0,0,0],       speed:0,    range:0    },
+  field:   { dir:[0,0.10,0],    speed:0.07, range:2.5  },  // pollen drifting up
+  rain:    { dir:[-0.10,-1,0],  speed:0.32, range:9.0  },  // diagonal fall
+  embers:  { dir:[0,0.70,0],    speed:0.20, range:7.0  },  // embers rising
+  void:    { dir:[0,0,0],       speed:0,    range:0    },  // stillness
+  aurora:  { dir:[1,0.04,0],    speed:0.11, range:14.0 },  // horizontal sweep
+  city:    { dir:[0,0,0],       speed:0,    range:0    },  // grid stays static
+}
+
 // ── Layer config ──────────────────────────────────────────────────────────────
 const LAYERS = [
   { name:'atmosphere', count:1800, sizeRange:[0.06,0.20], react:0.75, rotSpeed:0.005, instrument:'pad',     noiseScale:0.28, alphaMult:0.65 },
@@ -178,7 +192,7 @@ function hsl(h,s,l){
 function buildLayer(cfg){
   const {count,sizeRange,react,rotSpeed,noiseScale}=cfg
   const pos=new Float32Array(count*3),col=new Float32Array(count*3)
-  const sz=new Float32Array(count),off=new Float32Array(count),rad=new Float32Array(count)
+  const sz=new Float32Array(count),off=new Float32Array(count)
 
   const pts=generateDispersed(count)
   for(let i=0;i<count;i++){
@@ -189,22 +203,22 @@ function buildLayer(cfg){
     col[i*3]=1;col[i*3+1]=1;col[i*3+2]=1
     sz[i]=sizeRange[0]+Math.random()*(sizeRange[1]-sizeRange[0])
     off[i]=Math.random()*Math.PI*2
-    const p=pos.slice(i*3,i*3+3)
-    rad[i]=Math.sqrt(p[0]*p[0]+p[1]*p[1]+p[2]*p[2])
   }
   const geo=new THREE.BufferGeometry()
   geo.setAttribute('position',new THREE.BufferAttribute(pos,3))
   geo.setAttribute('aColor',  new THREE.BufferAttribute(col,3))
   geo.setAttribute('aSize',   new THREE.BufferAttribute(sz,1))
   geo.setAttribute('aOffset', new THREE.BufferAttribute(off,1))
-  geo.setAttribute('aRadius', new THREE.BufferAttribute(rad,1))
   const uniforms={
     uTime:{value:0},uBeat:{value:0},uOverall:{value:0},
     uBeatFlash:{value:0},
     uInstrument:{value:0},uReact:{value:react},uRotSpeed:{value:rotSpeed},
-    uSpread:{value:0.5},uSpeed:{value:0.5},uMorph:{value:0},
+    uSpread:{value:0.5},uSpeed:{value:0.5},
     uNoiseScale:{value:noiseScale??0.35},
     uAlphaMult:{value:cfg.alphaMult??1.0},
+    uDriftDir:  {value:new THREE.Vector3(0,0,0)},
+    uDriftSpeed:{value:0},
+    uDriftRange:{value:0},
   }
   const mat=new THREE.ShaderMaterial({
     vertexShader:particleVert,fragmentShader:particleFrag,uniforms,
@@ -282,12 +296,16 @@ export class Visualizer {
 
     this.lyricsMode = false
     this._lyricEntryTime = -999
-    this._ghostScale = 1.0
-    this._beatFlash = 0   // sharp instantaneous beat spike, fast decay
+    this._beatFlash = 0
     // Mood state (from Claude analysis)
     this._mood = { hue: 200, sat: 65, energy: 0.5, spread: 0.5, speed: 0.5 }
     this._moodTarget = null
     this._moodLerp = 0
+    // Scene drift state
+    this._scene = 'default'
+    this._driftCur = { dir:[0,0,0], speed:0, range:0 }
+    this._driftTarget = null
+    this._driftLerp = 0
     // Expose accent color for overlay
     this.accentRGB=[220,255,80]
     this._inverted = false
@@ -297,6 +315,22 @@ export class Visualizer {
   }
 
   setInvert(v) { this._inverted = v }
+
+  resetMood() {
+    this._mood = { hue: 200, sat: 65, energy: 0.5, spread: 0.5, speed: 0.5 }
+    this._moodTarget = null
+    this._moodLerp   = 0
+    this._scene      = 'default'
+    this._driftCur   = { dir:[0,0,0], speed:0, range:0 }
+    this._driftTarget = null
+    this._driftLerp  = 0
+    this._spotifyFeatures = false
+    this._layers.forEach(({uniforms}) => {
+      uniforms.uDriftDir.value.set(0,0,0)
+      uniforms.uDriftSpeed.value = 0
+      uniforms.uDriftRange.value = 0
+    })
+  }
 
   setFeatures(features){
     if (!features) return
@@ -335,6 +369,14 @@ export class Visualizer {
     this._mood.speed  = lerp(this._mood.speed,  this._moodTarget.speed)
     if (t >= 1) this._moodTarget = null
 
+    // Update scene drift based on current mood
+    const newScene = this._moodToScene(this._mood.hue, this._mood.energy)
+    if (newScene !== this._scene) {
+      this._scene = newScene
+      this._driftTarget = SCENE_PARAMS[newScene]
+      this._driftLerp = 0
+    }
+
     // Apply mood colors to particles
     const accentHue = (this._mood.hue + 150) % 360
     const [ar, ag, ab] = hsl(accentHue, this._mood.sat, 60)
@@ -359,6 +401,32 @@ export class Visualizer {
         }
       }
       layer.colorAttr.needsUpdate = true
+    })
+  }
+
+  _moodToScene(hue, energy) {
+    if (energy > 0.78)                     return 'city'
+    if (hue >= 320 || hue < 50)           return energy > 0.5 ? 'embers' : 'void'
+    if (hue >= 50  && hue < 140)          return 'field'
+    if (hue >= 140 && hue < 200)          return 'aurora'
+    if (hue >= 200 && hue < 260)          return 'rain'
+    return 'void'
+  }
+
+  _tickDrift(delta) {
+    this._driftLerp = Math.min(1, this._driftLerp + delta / 3.0) // 3s crossfade
+    const t = this._driftLerp
+    const lp = (a, b) => a + (b - a) * t
+    const d = this._driftCur, tgt = this._driftTarget
+    d.speed = lp(d.speed, tgt.speed)
+    d.range = lp(d.range, tgt.range)
+    d.dir   = [lp(d.dir[0], tgt.dir[0]), lp(d.dir[1], tgt.dir[1]), lp(d.dir[2], tgt.dir[2])]
+    if (this._driftLerp >= 1) this._driftTarget = null
+
+    this._layers.forEach(({uniforms}) => {
+      uniforms.uDriftDir.value.set(...d.dir)
+      uniforms.uDriftSpeed.value = d.speed
+      uniforms.uDriftRange.value = d.range
     })
   }
 
@@ -514,7 +582,6 @@ export class Visualizer {
 
     // Rotations
     const [atmo, scatter]=this._layers.map(l=>l.points)
-    const tempo=this.features.tempo/120
     const sp = 0.5 + this._mood.speed * 1.0
     atmo.rotation.y   += 0.0005*sp
     atmo.rotation.x   -= 0.0002*sp
@@ -552,6 +619,7 @@ export class Visualizer {
     // Mood transition tick
     if (this._moodTarget) this._tickMood(delta)
     else if (!this._spotifyFeatures) this._autoColorFromAudio(audio)
+    if (this._driftTarget) this._tickDrift(delta)
 
     // 1. Render particles → render target
     this.renderer.setRenderTarget(this._rt)
