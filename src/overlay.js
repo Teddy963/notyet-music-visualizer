@@ -161,8 +161,10 @@ export class DataOverlay {
     this._moodChips   = []   // [{r,g,b,born}]
     this._lastMoodHue = null
 
-    // Orbital frame
-    this._frameAngle = 0
+    // 3D sphere rotation
+    this._rotY    = 0
+    this._rotX    = 0
+    this._sorted3d = []
 
     this._resize()
     window.addEventListener('resize', () => {
@@ -258,9 +260,17 @@ export class DataOverlay {
       }
     })
 
-    // ── Edges first (needed for spring layout), then repulsion+spring ─────
+    // ── Build edges, then assign Fibonacci sphere positions ───────────────
     this._buildEdges(lines)
-    this._applyRepulsion()
+    const total = this._nodes.length
+    this._nodes.forEach((n, i) => {
+      const t     = (i + 0.5) / total
+      const phi   = Math.acos(Math.max(-1, Math.min(1, 1 - 2 * t)))
+      const theta = Math.PI * (1 + Math.sqrt(5)) * i
+      n.x3d = Math.sin(phi) * Math.cos(theta)
+      n.y3d = Math.sin(phi) * Math.sin(theta)
+      n.z3d = Math.cos(phi)
+    })
   }
 
   // ── Rebuild edges from lines (shared by setLines + refineWithKeywords) ───
@@ -571,7 +581,8 @@ export class DataOverlay {
   // ── Render ───────────────────────────────────────────────────────────────────
   update(audio, delta) {
     this.time += delta
-    this._frameAngle += delta * 0.04
+    this._rotY += delta * 0.055
+    this._rotX  = Math.sin(this.time * 0.045) * 0.22
 
     // Smooth color lerp toward target
     const ls = 1 - Math.pow(0.01, delta)
@@ -655,29 +666,67 @@ export class DataOverlay {
 
 
 
+    // ── 3D projection pass ───────────────────────────────────────────────
+    {
+      const R   = Math.min(w, h) * 0.30
+      const fov = 700
+      const cosY = Math.cos(this._rotY), sinY = Math.sin(this._rotY)
+      const cosX = Math.cos(this._rotX), sinX = Math.sin(this._rotX)
+      this._cosY = cosY; this._sinY = sinY
+      this._cosX = cosX; this._sinX = sinX
+      this._R3d  = R;    this._fov3d = fov
+
+      this._sorted3d = []
+      for (const n of this._nodes) {
+        if (n.x3d == null) continue
+        const rx = n.x3d * cosY + n.z3d * sinY
+        const ry = n.y3d
+        const rz = -n.x3d * sinY + n.z3d * cosY
+        const fx = rx
+        const fy = ry * cosX - rz * sinX
+        const fz = ry * sinX + rz * cosX
+        const sc = fov / (fz * R + fov + R)
+        n.x = w * 0.5 + fx * R * sc
+        n.y = h * 0.5 + fy * R * sc
+        n._fz         = fz
+        n._depthAlpha = 0.30 + sc * 0.70
+        this._sorted3d.push(n)
+      }
+      this._sorted3d.sort((a, b) => a._fz - b._fz)
+    }
+
     ctx.clearRect(0, 0, w, h)
 
-    // ── Orbital frame ────────────────────────────────────────────────────
+    // ── Sphere guide circles (equator + tilted meridian) ─────────────────
     {
-      const fa = 0.045 + overall * 0.02
-      ctx.save()
-      ctx.translate(w * 0.5, h * 0.5)
+      const R = this._R3d, fov = this._fov3d
+      const cosY = this._cosY, sinY = this._sinY
+      const cosX = this._cosX, sinX = this._sinX
+      const N  = 96
+      const fa = 0.05 + overall * 0.02
+
+      const drawCircle3d = (getPoint, alpha) => {
+        ctx.beginPath()
+        for (let i = 0; i <= N; i++) {
+          const [px3, py3, pz3] = getPoint(i / N * Math.PI * 2)
+          const rx = px3 * cosY + pz3 * sinY
+          const ry = py3
+          const rz = -px3 * sinY + pz3 * cosY
+          const fx = rx
+          const fy = ry * cosX - rz * sinX
+          const fz = ry * sinX + rz * cosX
+          const sc = fov / (fz * R + fov + R)
+          const sx = w * 0.5 + fx * R * sc
+          const sy = h * 0.5 + fy * R * sc
+          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy)
+        }
+        ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`
+        ctx.stroke()
+      }
+
       ctx.lineWidth = 0.5
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${fa})`
-      ctx.save()
-      ctx.rotate(this._frameAngle)
-      ctx.beginPath()
-      ctx.ellipse(0, 0, w * 0.44, h * 0.38, 0, 0, Math.PI * 2)
-      ctx.stroke()
-      ctx.restore()
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${fa * 0.55})`
-      ctx.save()
-      ctx.rotate(-this._frameAngle * 0.65)
-      ctx.beginPath()
-      ctx.ellipse(w * 0.03, -h * 0.02, w * 0.35, h * 0.30, Math.PI * 0.3, 0, Math.PI * 2)
-      ctx.stroke()
-      ctx.restore()
-      ctx.restore()
+      drawCircle3d(a => [Math.cos(a), 0, Math.sin(a)], fa)
+      drawCircle3d(a => [Math.cos(a), Math.sin(a) * 0.5, Math.sin(a) * 0.866], fa * 0.55)
     }
 
     // ── Scan line ────────────────────────────────────────────────────────
@@ -751,18 +800,17 @@ export class DataOverlay {
     }
 
     // ── Detection nodes ──────────────────────────────────────────────────
-    for (const n of this._nodes) {
+    const drawNodes = this._sorted3d.length > 0 ? this._sorted3d : this._nodes
+    for (const n of drawNodes) {
       n.activeTimer += delta
 
       if (n.state === 'dormant') {
-        const base = n.isTitle    ? 0.22
-                   : n.isCore     ? 0.10
-                   : n.isConnector? 0
-                   : n.isAttach   ? 0
-                   :                0.07
-        n.alpha = this._mapPinned
-          ? (n.isCore ? 0.85 : n.isConnector ? 0.45 : 0.60)
-          : Math.min(0.55, (base + (n.size / 80) * 0.03) * revealMult)
+        const target = n.isTitle    ? 0.55
+                     : n.isCore     ? 0.32
+                     : n.isConnector? 0.16
+                     : n.isAttach   ? 0.13
+                     :                0.22
+        n.alpha += (target - n.alpha) * Math.min(1, delta * 1.8)
       } else if (n.state === 'active') {
         n.alpha = Math.min(0.92, n.alpha + delta * 4)
       } else if (n.state === 'neighbor') {
@@ -773,8 +821,9 @@ export class DataOverlay {
         if (n.alpha <= 0.07) n.state = 'dormant'
       }
 
-      const beatBoost = n.state === 'active' ? this._beatFlash * 0.30 : 0
-      const a = Math.min(1, n.alpha + beatBoost)
+      const beatBoost  = n.state === 'active' ? this._beatFlash * 0.30 : 0
+      const depthAlpha = n._depthAlpha ?? 1
+      const a = Math.min(1, (n.alpha + beatBoost) * depthAlpha)
       const isActive  = n.state === 'active'
       const showLabel = isActive || n.isTitle || (n.isCore && n.alpha > 0.15) || (this._mapPinned && n.display)
 
