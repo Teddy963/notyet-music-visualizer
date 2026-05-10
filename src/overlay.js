@@ -39,11 +39,15 @@ const KO_PARTICLES = [
   '에','의','와','과','야','랑',
 ]
 
+// KO_ATTACH_WORDS: particles shown as nodes but with very low ring weight (like EN ATTACH_WORDS)
+const KO_ATTACH_WORDS = new Set(KO_PARTICLES)
+
 function stripKoParticle(word) {
   for (const p of KO_PARTICLES) {
-    if (word.endsWith(p) && word.length > p.length) return word.slice(0, word.length - p.length)
+    if (word.endsWith(p) && word.length > p.length)
+      return [word.slice(0, word.length - p.length), p]
   }
-  return word
+  return [word, null]
 }
 
 // Pronouns & light function words — kept in map but always small (no freq boost)
@@ -55,32 +59,34 @@ const CONNECTOR_WORDS = new Set([
 ])
 
 function tokenize(text) {
-  return text.split(/\s+/).map(raw => {
+  const out = []
+  for (const raw of text.split(/\s+/)) {
     const isKorean = /[가-힣]/.test(raw)
-    // Hyphen buildup rule: "pin-pin-pin-pinky" → use last segment only
     let processRaw = raw
     if (!isKorean && raw.includes('-')) {
       const parts = raw.split('-').map(p => p.replace(/[^a-zA-Z']/g, '')).filter(p => p.length >= 1)
       if (parts.length >= 2) processRaw = parts[parts.length - 1]
     }
-    let cleaned = isKorean
-      ? stripKoParticle(raw.replace(/[^가-힣]/g, ''))
-      : processRaw.replace(/[^a-zA-Z']/g, '').toLowerCase()
-    if (cleaned.length < 1) return null
-    // Allow single-char: known connectors (e.g. "i") OR original uppercase letter (e.g. "D", "E")
-    if (cleaned.length < 2 && !CONNECTOR_WORDS.has(cleaned)) {
-      if (!isKorean && /^[A-Z]$/.test(raw.replace(/[^a-zA-Z]/g, ''))) { /* keep */ }
-      else return null
+    let cleaned
+    if (isKorean) {
+      ;[cleaned] = stripKoParticle(raw.replace(/[^가-힣]/g, ''))
+    } else {
+      cleaned = processRaw.replace(/[^a-zA-Z']/g, '').toLowerCase()
     }
-    if (isKorean ? KO_STOPWORDS.has(cleaned) : STOPWORDS.has(cleaned)) return null
-    if (!isKorean && isFiller(cleaned)) return null
-    return cleaned
-  }).filter(Boolean)
+    if (cleaned.length < 1) continue
+    if (cleaned.length < 2 && !CONNECTOR_WORDS.has(cleaned) && !isKorean) {
+      if (!/^[A-Z]$/.test(raw.replace(/[^a-zA-Z]/g, ''))) continue
+    }
+    if (isKorean ? KO_STOPWORDS.has(cleaned) : STOPWORDS.has(cleaned)) continue
+    if (!isKorean && isFiller(cleaned)) continue
+    out.push(cleaned)
+  }
+  return out
 }
 
 
-// standalone KO_STOPWORDS kept for whole-word particle lines
-const KO_STOPWORDS = new Set(['을','를','이','가','은','는','과','와','의','에','도','만','로','으로','에서','까지','부터'])
+// KO_STOPWORDS: purely meaningless filler (particles now handled as KO_ATTACH_WORDS nodes)
+const KO_STOPWORDS = new Set([])
 
 // HSL ↔ RGB helpers
 function hslToRgb(h, s, l) {
@@ -95,24 +101,24 @@ function hslToRgb(h, s, l) {
   return [hue(p,q,h+1/3), hue(p,q,h), hue(p,q,h-1/3)]
 }
 
-// ── Poincaré disk helpers ─────────────────────────────────────────────────
-// Move `focus` to origin: T_focus(z) = (z - focus) / (1 - conj(focus)·z)
-function poincareMobius(z, focus) {
-  const [zx,zy] = z, [fx,fy] = focus
-  const nx = zx-fx, ny = zy-fy
-  const cdx = fx*zx + fy*zy, cdy = fx*zy - fy*zx
-  const dx = 1-cdx, dy = -cdy
-  const d2 = dx*dx + dy*dy || 1e-9
-  return [(nx*dx + ny*dy)/d2, (ny*dx - nx*dy)/d2]
-}
-// Move localPos from parent-centered frame to world frame (inverse Möbius)
-function poincareFromLocal(local, parent) {
-  const [lx,ly] = local, [px,py] = parent
-  const nx = lx+px, ny = ly+py
-  const cdx = px*lx + py*ly, cdy = px*ly - py*lx
-  const dx = 1+cdx, dy = cdy
-  const d2 = dx*dx + dy*dy || 1e-9
-  return [(nx*dx + ny*dy)/d2, (ny*dx - nx*dy)/d2]
+
+// SLERP between two points on the sphere surface
+// Returns intermediate point at parameter t ∈ [0,1]
+function slerpSphere(ax, ay, az, bx, by, bz, t) {
+  const la = Math.sqrt(ax*ax + ay*ay + az*az) || 1
+  const lb = Math.sqrt(bx*bx + by*by + bz*bz) || 1
+  const anx = ax/la, any = ay/la, anz = az/la
+  const bnx = bx/lb, bny = by/lb, bnz = bz/lb
+  const dot = Math.min(1, Math.max(-1, anx*bnx + any*bny + anz*bnz))
+  const omega = Math.acos(dot)
+  if (omega < 0.001) {
+    return [ax + t*(bx-ax), ay + t*(by-ay), az + t*(bz-az)]
+  }
+  const so = Math.sin(omega)
+  const fa = Math.sin((1-t)*omega) / so
+  const fb = Math.sin(t*omega) / so
+  const r = (la + lb) * 0.5   // average radius
+  return [(anx*fa + bnx*fb)*r, (any*fa + bny*fb)*r, (anz*fa + bnz*fb)*r]
 }
 
 // Stable deterministic hash → [0, 1)
@@ -128,13 +134,15 @@ export class DataOverlay {
   constructor(container) {
     this.canvas = document.createElement('canvas')
     this.canvas.id = 'ar-overlay'
-    this.canvas.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:6;'
+    this.canvas.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:6;mix-blend-mode:screen;'
     container.appendChild(this.canvas)
     this.ctx = this.canvas.getContext('2d')
 
     this.time        = 0
     this._trackCode  = ''
     this._beatFlash  = 0
+    this._edgeGlitch = 0   // 0→1, decays; drives line displacement magnitude
+    this._sweepT     = 0   // radar sweep position 0→1 (left to right)
 
     // Color — smooth lerp toward target, overridden by mood when available
     this._cr = 255; this._cg = 40;  this._cb = 40   // current (lerped)
@@ -181,38 +189,168 @@ export class DataOverlay {
     this._moodChips   = []   // [{r,g,b,born}]
     this._lastMoodHue = null
 
-    // Hyperbolic focus (Poincaré disk)
-    this._focus       = [0, 0]
-    this._targetFocus = [0, 0]
-    this._stRoot      = 0
-    this._stChildren  = {}
+    // World rotation + camera pan (force-directed layout)
+    this._worldAngle  = 0      // slow auto-rotation (radians)
+    this._camX        = 0
+    this._camY        = 0
+    this._targetCamX  = 0
+    this._targetCamY  = 0
+    this._wordLine    = {}     // word → lyric line index
+
+    // Drag-to-rotate state
+    this._dragActive  = false
+    this._dragLastX   = 0
+    this._dragLastY   = 0
+    this._dragVelX    = 0
+    this._tiltAngle   = 0.28
+    this._dragMoved   = false   // distinguish click vs drag
+
+    // Recommendation nodes
+    this._recNodes    = []      // [{track, wx, wy, wz, x, y, hue, alpha}]
+    this.onRecClick   = null    // callback(track) — set by main.js
 
     this._resize()
+    this._initDrag()
     window.addEventListener('resize', () => {
       this._resize()
       this._rebuildPositions()
-      // Clear in-flight rings — their coordinates are stale after resize
       this._accumCircles = []
       this._prevLineTokens = new Set()
+    })
+  }
+
+  _initDrag() {
+    // Canvas has pointer-events:none — listen on window instead
+    // Skip if pointer is on a button/interactive element
+    const isUI = e => e.target?.closest('button, a, input, [data-no-drag]') != null
+
+    let _downX = 0, _downY = 0
+
+    const onDown = e => {
+      if (isUI(e)) return
+      this._dragActive = true
+      this._dragMoved  = false
+      this._dragLastX  = e.clientX
+      this._dragLastY  = e.clientY
+      _downX = e.clientX; _downY = e.clientY
+      this._dragVelX   = 0
+    }
+    const onMove = e => {
+      if (!this._dragActive) return
+      const dx = e.clientX - this._dragLastX
+      const dy = e.clientY - this._dragLastY
+      if (Math.abs(e.clientX - _downX) > 4 || Math.abs(e.clientY - _downY) > 4) this._dragMoved = true
+      this._dragLastX = e.clientX
+      this._dragLastY = e.clientY
+      this._worldAngle += dx * 0.006
+      // Cap velocity to prevent post-drag spinning lag
+      this._dragVelX = Math.max(-1.2, Math.min(1.2, dx * 0.006 * 60))
+      this._tiltAngle = Math.max(0, Math.min(0.8, this._tiltAngle + dy * 0.003))
+    }
+    const onUp = e => {
+      if (!this._dragMoved && this._dragActive && !isUI(e)) {
+        // Treat as click — check rec nodes
+        this._handleClick(e.clientX, e.clientY)
+      }
+      this._dragActive = false
+    }
+
+    // Track hover position for rec node highlight
+    window.addEventListener('pointermove', e => {
+      this._hoverX = e.clientX
+      this._hoverY = e.clientY
+    })
+
+    window.addEventListener('pointerdown', onDown)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup',   onUp)
+  }
+
+  _handleClick(cx, cy) {
+    if (!this._recNodes.length || !this.onRecClick) return
+    // Find closest rec node to click point
+    let best = null, bestDist = Infinity
+    for (const rn of this._recNodes) {
+      if (rn.x == null) continue
+      const d = Math.hypot(rn.x - cx, rn.y - cy)
+      if (d < bestDist) { bestDist = d; best = rn }
+    }
+    const hitR = 40  // px hit radius
+    if (best && bestDist < hitR) this.onRecClick(best.track)
+  }
+
+  setRecommendations(tracks) {
+    if (!tracks?.length) { this._recNodes = []; return }
+    const SR = (this._sphereR || 220) * 1.35  // slightly outside main sphere
+    this._recNodes = tracks.slice(0, 7).map((track, i) => {
+      const phi   = (i / tracks.length) * Math.PI * 2 + 0.4
+      const theta = Math.PI * 0.5 + (Math.random() - 0.5) * 0.6  // near equator
+      return {
+        track,
+        wx: SR * Math.sin(theta) * Math.cos(phi),
+        wy: SR * Math.cos(theta),
+        wz: SR * Math.sin(theta) * Math.sin(phi),
+        hue: (i / tracks.length) * 360,
+        alpha: 0,
+        x: null, y: null,
+        label: track.name.slice(0, 18) + (track.name.length > 18 ? '…' : ''),
+        artist: track.artists?.[0]?.name ?? '',
+      }
     })
   }
 
   _resize() {
     this.canvas.width  = window.innerWidth
     this.canvas.height = window.innerHeight
+    this._buildGridCache()
+  }
+
+  _buildGridCache() {
+    const w = window.innerWidth, h = window.innerHeight
+    const cr = 232, cg = 175, cb = 0
+    const MINOR = 20, MAJOR = 80, CROSS = 5
+    const snap = v => Math.round(v) + 0.5
+
+    if (!this._gridCanvas) {
+      this._gridCanvas = document.createElement('canvas')
+    }
+    this._gridCanvas.width  = w
+    this._gridCanvas.height = h
+    const gc = this._gridCanvas.getContext('2d')
+    gc.clearRect(0, 0, w, h)
+
+    // Fine grid
+    gc.lineWidth = 0.4
+    gc.strokeStyle = `rgba(${cr},${cg},${cb},0.045)`
+    gc.beginPath()
+    for (let x = 0; x < w; x += MINOR) { gc.moveTo(snap(x), 0); gc.lineTo(snap(x), h) }
+    for (let y = 0; y < h; y += MINOR) { gc.moveTo(0, snap(y)); gc.lineTo(w, snap(y)) }
+    gc.stroke()
+
+    // Major grid
+    gc.lineWidth = 0.6
+    gc.strokeStyle = `rgba(${cr},${cg},${cb},0.09)`
+    gc.beginPath()
+    for (let x = 0; x < w; x += MAJOR) { gc.moveTo(snap(x), 0); gc.lineTo(snap(x), h) }
+    for (let y = 0; y < h; y += MAJOR) { gc.moveTo(0, snap(y)); gc.lineTo(w, snap(y)) }
+    gc.stroke()
+
+    // Registration crosshairs
+    gc.lineWidth = 0.7
+    gc.strokeStyle = `rgba(${cr},${cg},${cb},0.18)`
+    for (let x = 0; x <= w; x += MAJOR) {
+      for (let y = 0; y <= h; y += MAJOR) {
+        gc.beginPath()
+        gc.moveTo(snap(x) - CROSS, snap(y)); gc.lineTo(snap(x) + CROSS, snap(y))
+        gc.moveTo(snap(x), snap(y) - CROSS); gc.lineTo(snap(x), snap(y) + CROSS)
+        gc.stroke()
+      }
+    }
   }
 
   _rebuildPositions() {
-    const w = this.canvas.width, h = this.canvas.height
-    const pad = 60
-    this._nodes.forEach((n, nodeIdx) => {
-      const idx = n._nodeIdx ?? nodeIdx
-      const h1 = wordHash(n.word, 1), h2 = wordHash(n.word, 2)
-      const gx = (idx * 0.618034) % 1
-      const gy = (idx * 0.381966) % 1
-      n.x = pad + (h1 * 0.45 + gx * 0.55) * (w - pad * 2)
-      n.y = pad + (h2 * 0.45 + gy * 0.55) * (h - pad * 2)
-    })
+    // World coords (wx, wy) are canvas-size independent — no rebuild needed.
+    // Projection in update() recalculates x, y each frame from wx, wy.
   }
 
   // ── Called once per song ─────────────────────────────────────────────────────
@@ -233,10 +371,17 @@ export class DataOverlay {
       }
     }
 
-    // Count all unique content words
+    // Count all unique content words + build surface form map (root → first surface with particle)
     const freq = {}
+    const surfaceMap = {}  // root → display surface form (e.g. "슬픔" → "슬픔에")
     for (const line of lines) {
       const seen = new Set()
+      for (const raw of line.words.split(/\s+/)) {
+        if (!/[가-힣]/.test(raw)) continue
+        const rawKo = raw.replace(/[^가-힣]/g, '')
+        const [root] = stripKoParticle(rawKo)
+        if (root && root.length >= 2 && !surfaceMap[root]) surfaceMap[root] = rawKo
+      }
       for (const t of tokenize(line.words)) {
         if (!seen.has(t)) { freq[t] = (freq[t] || 0) + 1; seen.add(t) }
       }
@@ -249,12 +394,13 @@ export class DataOverlay {
     this._nodes = sorted.map(([word, count], nodeIdx) => {
       const h3 = wordHash(word, 3), h4 = wordHash(word, 4)
       const isTitle = titleWords.has(word)
-      // Uniform freq-based size — no type classification
       const freqScale = Math.log2(count + 1) / Math.log2(maxFreq + 1)
       const size = 5 + h4 * 4 + freqScale * 28 + (isTitle ? 14 : 0)
       const type = h3 > 0.5 ? 'circle' : 'box'
+      // Display: surface form with particle if Korean (e.g. "슬픔에"), else uppercase
+      const surface = /[가-힣]/.test(word) ? (surfaceMap[word] ?? word) : word.toUpperCase()
       return {
-        word, parts: [word], display: word.toUpperCase(),
+        word, parts: [word], display: surface,
         x: w * 0.5, y: h * 0.5,
         type, size, rot: (h3 - 0.5) * 0.4, freq: count,
         isCore: isTitle || count >= Math.max(2, maxFreq * 0.35),
@@ -265,9 +411,9 @@ export class DataOverlay {
       }
     })
 
-    // ── Build edges → hyperbolic layout ──────────────────────────────────
+    // ── Build edges → radial sphere layout ───────────────────────────────
     this._buildEdges(lines)
-    this._computeHyperbolicLayout()
+    this._computeRadialLayout()
   }
 
   // ── Rebuild edges from lines (shared by setLines + refineWithKeywords) ───
@@ -281,26 +427,34 @@ export class DataOverlay {
       }
     })
     const edgeSet = new Set()
+    const addEdge = (a, b, sameLine) => {
+      if (a === b) return
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`
+      if (!edgeSet.has(key)) {
+        edgeSet.add(key)
+        this._edges.push({ a, b, sameLine: !!sameLine })
+      } else if (sameLine) {
+        // Upgrade existing edge to sameLine if encountered again within a line
+        const existing = this._edges.find(e => (e.a === a && e.b === b) || (e.a === b && e.b === a))
+        if (existing) existing.sameLine = true
+      }
+    }
+
+    // Sequential window-3: connects consecutive words within each line
+    // Bigram (i→i+1) + skip-gram (i→i+2) only — no full cliques
+    const W = 3
     for (const line of lines) {
       const tokens = tokenize(line.words)
-      const lineIdxs = new Set()
-      for (const t of tokens)
-        for (const idx of (wordToIdx[t] || [])) lineIdxs.add(idx)
-      const arr = [...lineIdxs]
-      for (let i = 0; i < arr.length; i++)
-        for (let j = i + 1; j < arr.length; j++) {
-          const a = arr[i], b = arr[j]
-          const key = a < b ? `${a}-${b}` : `${b}-${a}`
-          if (!edgeSet.has(key)) { edgeSet.add(key); this._edges.push({ a, b }) }
+      const seen = new Set()
+      const idxSeq = []
+      for (const t of tokens) {
+        for (const idx of (wordToIdx[t] || [])) {
+          if (!seen.has(idx)) { seen.add(idx); idxSeq.push(idx) }
         }
-    }
-    if (this._edges.length > 300) {
-      this._edges = this._edges
-        .sort((e, f) => {
-          const wa = this._nodes[e.a].freq + this._nodes[e.b].freq
-          const wb = this._nodes[f.a].freq + this._nodes[f.b].freq
-          return wb - wa
-        }).slice(0, 300)
+      }
+      for (let i = 0; i < idxSeq.length; i++)
+        for (let j = i + 1; j < Math.min(idxSeq.length, i + W); j++)
+          addEdge(idxSeq[i], idxSeq[j], true)  // all window-3 edges are same-line
     }
   }
 
@@ -314,7 +468,7 @@ export class DataOverlay {
     for (const mood of Object.values(moodMap)) {
       for (const kw of (mood.keywords || [])) {
         const clean = /[가-힣]/.test(kw)
-          ? stripKoParticle(kw.replace(/[^가-힣]/g, ''))
+          ? stripKoParticle(kw.replace(/[^가-힣]/g, ''))[0]
           : kw.toLowerCase().replace(/[^a-z']/g, '')
         if (clean.length >= 2) {
           kwSet.add(clean)
@@ -480,13 +634,18 @@ export class DataOverlay {
         }
       }
     })
-    // Update hyperbolic focus toward centroid of active nodes
+    // Pan camera toward active nodes' projected screen centroid
     const actNodes = this._nodes.filter(n => n.state === 'active')
     if (actNodes.length) {
-      const hcx = actNodes.reduce((s,n) => s + (n.hx||0), 0) / actNodes.length
-      const hcy = actNodes.reduce((s,n) => s + (n.hy||0), 0) / actNodes.length
-      const hl  = Math.sqrt(hcx*hcx + hcy*hcy)
-      this._targetFocus = hl > 0.88 ? [hcx*0.88/hl, hcy*0.88/hl] : [hcx, hcy]
+      const rc = Math.cos(this._worldAngle), rs = Math.sin(this._worldAngle)
+      // Rotate each node's world coords, take centroid of projected X/Y
+      let sx = 0, sy = 0
+      for (const n of actNodes) {
+        sx += n.wx * rc + (n.wz||0) * rs
+        sy += n.wy
+      }
+      this._targetCamX = sx / actNodes.length
+      this._targetCamY = sy / actNodes.length
     }
 
     // Neighbors: activate at half brightness
@@ -503,68 +662,89 @@ export class DataOverlay {
     }
   }
 
-  // ── Hyperbolic layout ────────────────────────────────────────────────────
-  _computeHyperbolicLayout() {
+  // ── Radial sphere layout ─────────────────────────────────────────────────
+  // Nodes placed on a 3D sphere surface.
+  // Frequency rank → radial ring (center = high freq, outer = low freq).
+  // Sphere rotates around Y axis → different nodes come to front over time.
+  // This produces the neuron / Spotify-globe visual.
+  _computeRadialLayout() {
     const nodes = this._nodes
-    if (!nodes.length) return
+    const N = nodes.length
+    if (!N) return
 
-    // Spanning tree via BFS from highest-freq root
-    const rootIdx = nodes.reduce((b, n, i) => n.freq > nodes[b].freq ? i : b, 0)
-    const adj = {}
-    for (const e of this._edges) {
-      ;(adj[e.a] = adj[e.a] || []).push(e.b)
-      ;(adj[e.b] = adj[e.b] || []).push(e.a)
+    // Sort by frequency (highest first = center)
+    // Penalties: single-char Korean ×0.15, connector/function words ×0.20
+    // Boost: song title words ×3.0 (always pull toward center)
+    const titleWords = this._titleWords ?? new Set()
+    const _effFreq = n => {
+      if (KO_ATTACH_WORDS.has(n.word)) return n.freq * 0.20
+      if (/^[가-힣]$/.test(n.word)) return n.freq * 0.15
+      if (CONNECTOR_WORDS.has(n.word) || ATTACH_WORDS.has(n.word)) return n.freq * 0.20
+      if (titleWords.has(n.word)) return n.freq * 3.0
+      return n.freq
     }
-    const children = {}, visited = new Set([rootIdx]), queue = [rootIdx]
-    while (queue.length) {
-      const u = queue.shift()
-      children[u] = children[u] || []
-      for (const v of (adj[u] || [])) {
-        if (!visited.has(v)) { visited.add(v); children[u].push(v); queue.push(v) }
+    const sorted = [...nodes].sort((a, b) => _effFreq(b) - _effFreq(a))
+
+    // Ring capacity: center=1, then grows outward (1,5,10,16,22,28,35...)
+    const RING_CAPS = [1, 5, 10, 16, 22, 28, 35, 42]
+    let ring = 0, ringCount = 0
+    sorted.forEach(n => {
+      const cap = RING_CAPS[Math.min(ring, RING_CAPS.length - 1)]
+      if (ringCount >= cap) { ring++; ringCount = 0 }
+      n._ring    = ring
+      n._ringIdx = ringCount
+      n._ringCap = RING_CAPS[Math.min(ring, RING_CAPS.length - 1)]
+      ringCount++
+    })
+    const maxRing = Math.max(1, sorted[sorted.length - 1]._ring)
+    this._maxRing = maxRing
+
+    // Place nodes in 3D spherical coordinates
+    // Ring 0 = north pole, outer rings → equator
+    const SR = 220   // sphere radius (world units)
+    this._sphereR = SR
+    nodes.forEach(n => {
+      const t     = n._ring / maxRing          // 0 = center, 1 = outer
+      const theta = t * Math.PI * 0.85         // polar angle (0 = pole/center, π*0.85 ≈ equator)
+      // Golden-angle azimuth within ring, offset per ring for organic spacing
+      const phi   = (n._ringIdx / Math.max(1, n._ringCap)) * Math.PI * 2
+                    + n._ring * 2.399          // 2.399 ≈ golden angle (radians)
+      // Small jitter for organic look
+      const jt    = (wordHash(n.word, 7) - 0.5) * 0.15
+      const jp    = (wordHash(n.word, 8) - 0.5) * 0.25
+
+      // Ring 0 = nucleus at sphere origin (0,0,0)
+      // Perspective projects (0,0,0) → exact screen center regardless of rotation
+      if (n._ring === 0) {
+        n.wx = 0; n.wy = 0; n.wz = 0
+      } else {
+        n.wx = SR * Math.sin(theta + jt) * Math.cos(phi + jp)
+        n.wy = SR * Math.cos(theta + jt)
+        n.wz = SR * Math.sin(theta + jt) * Math.sin(phi + jp)
       }
-    }
-    // Disconnected nodes → attach directly to root
-    nodes.forEach((_, i) => {
-      if (!visited.has(i)) { (children[rootIdx] = children[rootIdx] || []).push(i) }
-    })
-    this._stRoot = rootIdx; this._stChildren = children
 
-    // Recursive hyperbolic placement
-    const H_STEP = 0.72  // hyperbolic radius per level
-    const place = (idx, pos, parentAngle, sectorSpan) => {
-      nodes[idx].hx = pos[0]; nodes[idx].hy = pos[1]
-      const kids = children[idx] || []
-      if (!kids.length) return
-      const r_euc = Math.tanh(H_STEP / 2)
-      const span  = Math.min(sectorSpan * 0.92, Math.PI * 1.85)
-      const start = parentAngle + Math.PI - span / 2
-      kids.forEach((kid, k) => {
-        const angle = start + (k + 0.5) * span / kids.length
-        let cp = poincareFromLocal([r_euc * Math.cos(angle), r_euc * Math.sin(angle)], pos)
-        const cl = Math.sqrt(cp[0]**2 + cp[1]**2)
-        if (cl > 0.93) { cp = [cp[0]*0.93/cl, cp[1]*0.93/cl] }
-        place(kid, cp, angle, span / kids.length)
-      })
-    }
-    place(rootIdx, [0, 0], 0, Math.PI * 2)
-
-    // Assign cluster hues — each root-child subtree gets a distinct hue
-    const rootKids = children[rootIdx] || []
-    const assignHue = (idx, hue) => {
-      nodes[idx].hue = ((hue + (wordHash(nodes[idx].word, 9) - 0.5) * 35) + 360) % 360
-      for (const c of (children[idx] || [])) assignHue(c, hue)
-    }
-    rootKids.forEach((ki, k) => assignHue(ki, (k / Math.max(1, rootKids.length)) * 360))
-    nodes[rootIdx].hue = 55  // root = gold
-
-    // Override node sizes: hub = larger, leaf = smaller square
-    nodes.forEach((n, i) => {
-      const isHub = i === rootIdx || rootKids.includes(i)
-      n.size = isHub ? 14 + n.freq * 1.2 : 5 + n.freq * 0.4
-      if (!isHub) n.type = 'box'  // leaf nodes → small squares like reference
+      // Size decreases exponentially with ring — center big, outer tiny
+      const RING_SIZES = [58, 32, 18, 11, 7, 5, 3]
+      n.size = RING_SIZES[Math.min(n._ring, RING_SIZES.length - 1)]
+      n.type = n._ring <= 1 ? 'circle'
+             : wordHash(n.word, 3) > 0.55 ? 'circle' : 'box'
+      // Hue: azimuth angle → rainbow around the sphere, slight ring-tint
+      n.hue = 42  // AMBER LOCK — revert to: ((phi / (Math.PI * 2)) * 360 + n._ring * 20 + 360) % 360
     })
 
-    this._focus = [0, 0]; this._targetFocus = [0, 0]
+    // Word→line map (for camera targeting on lyric change)
+    const lines = this._lines || []
+    const wordLine = {}
+    lines.forEach((line, li) => {
+      for (const t of tokenize(line.words))
+        if (wordLine[t] == null) wordLine[t] = li
+    })
+    this._wordLine = wordLine
+
+    // Reset camera / rotation
+    this._camX = 0; this._camY = 0
+    this._targetCamX = 0; this._targetCamY = 0
+    this._worldAngle = 0
   }
 
   // Spread nodes so they don't overlap, then pull edge-connected nodes together
@@ -657,11 +837,19 @@ export class DataOverlay {
     this._cr += (this._tr - this._cr) * ls
     this._cg += (this._tg - this._cg) * ls
     this._cb += (this._tb - this._cb) * ls
-    const cr = Math.round(this._cr), cg = Math.round(this._cg), cb = Math.round(this._cb)
+    const cr = 232, cg = 175, cb = 0  // AMBER LOCK — structural layer (wireframe, HUD)
+    // Active layer — mood color, lerped per lyric line
+    const acr = Math.round(this._cr), acg = Math.round(this._cg), acb = Math.round(this._cb)
+    // Dormant nodes — amber tinted toward mood (60% amber, 40% mood)
+    const dcr = Math.round(cr * 0.60 + acr * 0.40)
+    const dcg = Math.round(cg * 0.60 + acg * 0.40)
+    const dcb = Math.round(cb * 0.60 + acb * 0.40)
 
     const { ctx } = this
     const w = this.canvas.width, h = this.canvas.height
     const cx = w * 0.5
+    // Pixel snap helper — aligns to half-pixel so 1px strokes fall on exact pixel rows
+    const px = v => Math.round(v) + 0.5
     const overall = audio.overall ?? 0
     const bass    = audio.bass    ?? audio.kick ?? 0
     const treble  = audio.treble  ?? audio.texture ?? 0
@@ -672,7 +860,10 @@ export class DataOverlay {
     // ── Beat effect spawning ─────────────────────────────────────────────
     this._cascadeCd -= delta
     if (beat) {
-      this._beatFlash = 1.0
+      this._beatFlash  = 1.0
+      // Edge glitch: strong bass/kick = bigger displacement, lasts ~2-4 frames
+      if (kick > 0.4 || bass > 0.55)
+        this._edgeGlitch = Math.min(1, 0.5 + kick * 0.7 + bass * 0.4)
 
       const activeNodes = this._nodes.filter(n => n.state === 'active')
 
@@ -705,7 +896,8 @@ export class DataOverlay {
         this._cascadeCd = 3.0
       }
     }
-    this._beatFlash *= Math.pow(0.80, delta * 60)
+    this._beatFlash  *= Math.pow(0.80, delta * 60)
+    this._edgeGlitch *= Math.pow(0.55, delta * 60)  // fast decay: gone in ~3-4 frames
 
     // B: Edge signal pulses — slower rate
     this._pulseCd -= delta
@@ -734,87 +926,341 @@ export class DataOverlay {
 
 
 
-    // ── Hyperbolic focus lerp + Möbius projection ────────────────────────
+    // ── 3D globe: Y-rotation + X-tilt + perspective projection ──────────
     {
-      const ls = 1 - Math.pow(0.005, delta)
-      this._focus[0] += (this._targetFocus[0] - this._focus[0]) * ls
-      this._focus[1] += (this._targetFocus[1] - this._focus[1]) * ls
-      const diskR = Math.min(w, h) * 0.43
+      if (!this._dragActive) {
+        // Inertia decay
+        this._dragVelX *= Math.pow(0.88, delta * 60)
+        this._worldAngle += this._dragVelX * delta
+
+        // Auto-focus: rotate toward the lowest-ring active node (ring>0)
+        // Ring 0 is always center — use ring 1+ active node as focus target
+        const focusNode = this._nodes
+          .filter(n => n.state === 'active' && (n._ring ?? 99) > 0 && n.wx != null)
+          .sort((a, b) => (a._ring ?? 99) - (b._ring ?? 99))[0]
+
+        const velMag = Math.abs(this._dragVelX)
+        if (focusNode && velMag < 0.008) {
+          // Angle that brings this node's XZ to the +Z front
+          const targetAngle = Math.atan2(-focusNode.wx, focusNode.wz || 0.001)
+          // Shortest-path angular delta
+          let da = targetAngle - this._worldAngle
+          while (da >  Math.PI) da -= Math.PI * 2
+          while (da < -Math.PI) da += Math.PI * 2
+          // Gentle lerp — only when inertia is negligible
+          const focusStrength = Math.max(0, 1 - velMag / 0.008)
+          this._worldAngle += da * Math.min(1, delta * 0.8 * focusStrength)
+
+          // Auto-tilt: rotate X axis so active node centroid lands near vertical center
+          const activeForTilt = this._nodes.filter(n => n.state === 'active' && n.wx != null && (n._ring ?? 99) > 0)
+          if (activeForTilt.length > 0) {
+            const avgWY = activeForTilt.reduce((sum, n) => sum + n.wy, 0) / activeForTilt.length
+            const tiltTarget = Math.atan2(avgWY, this._sphereR || 220)
+            const clampedTilt = Math.max(0, Math.min(0.75, tiltTarget))
+            this._tiltAngle += (clampedTilt - this._tiltAngle) * Math.min(1, delta * 0.6 * focusStrength)
+          }
+        } else if (!focusNode) {
+          // No active node — slow drift
+          this._worldAngle += delta * 0.020
+        }
+      } else {
+        this._dragVelX *= Math.pow(0.88, delta * 60)
+      }
+
+      const TILT  = this._tiltAngle ?? 0.28    // user-controlled X-axis tilt
+      const rawR  = this._sphereR || 220
+      const SR    = Math.min(w, h) * 0.38      // sphere radius in screen units
+      const s     = SR / rawR                  // world→screen scale
+      const FOCAL = SR * 2.4                   // camera Z distance (perspective strength)
+
+      const rc = Math.cos(this._worldAngle), rs = Math.sin(this._worldAngle)
+      const ct = Math.cos(TILT), st = Math.sin(TILT)
+      // Store projection params for curved edge drawing
+      this._pp = { rc, rs, ct, st, SR, s, FOCAL, w, h }
+
       for (const n of this._nodes) {
-        if (n.hx == null) { n._projAlpha = 0; continue }
-        const [px, py] = poincareMobius([n.hx, n.hy], this._focus)
-        n.x = w * 0.5 + px * diskR
-        n.y = h * 0.5 + py * diskR
-        const d = Math.sqrt(px*px + py*py)
-        n._projScale = Math.max(0.25, 1.0 - d * 0.60)
-        n._projAlpha = Math.max(0.10, 1.0 - d * 0.70)
+        if (n.wx == null) { n._projAlpha = 0; n._projScale = 0; continue }
+        // 1. Y-axis rotation
+        const rx0 = (n.wx * rc + (n.wz||0) * rs) * s
+        const ry0 =  n.wy * s
+        const rz0 = (-n.wx * rs + (n.wz||0) * rc) * s
+        // 2. X-axis tilt (rotate around X)
+        const rx  = rx0
+        const ry  = ry0 * ct - rz0 * st
+        const rz  = ry0 * st + rz0 * ct
+        // 3. Perspective projection: camera at (0,0,+FOCAL), looking toward -Z
+        //    Nodes with high rz are closest to camera → appear larger
+        const dz  = Math.max(0.1, FOCAL - rz)   // distance: camera to node
+        const p   = FOCAL / dz                  // perspective scale (>1 = front, <1 = back)
+        n.x = w * 0.5 + rx * p
+        n.y = h * 0.5 + ry * p
+        n._rz = rz   // store for depth sort
+        // 4. Depth → alpha (back is almost invisible)
+        const depth = (rz + SR) / (2 * SR)      // 0=back, 1=front
+        n._projAlpha = Math.max(0.05, depth * 0.92 + 0.08)
+        n._projScale = Math.max(0.18, p * 0.88)
+      }
+
+      // Depth sort: draw back nodes first so front nodes paint over them
+      // Use a separate array — do NOT sort this._nodes in-place (edges use original indices)
+      this._drawOrder = [...this._nodes].sort((a, b) => (a._rz||0) - (b._rz||0))
+
+      // Project rec nodes with same pipeline (they sit on a larger shell)
+      for (const rn of this._recNodes) {
+        const rx0 = (rn.wx * rc + rn.wz * rs) * s
+        const ry0 =  rn.wy * s
+        const rz0 = (-rn.wx * rs + rn.wz * rc) * s
+        const ry  = ry0 * ct - rz0 * st
+        const rz  = ry0 * st + rz0 * ct
+        const dz  = Math.max(0.1, FOCAL - rz)
+        const p   = FOCAL / dz
+        rn.x = w * 0.5 + rx0 * p
+        rn.y = h * 0.5 + ry  * p
+        rn._depth = (rz + SR * 1.35) / (2 * SR * 1.35)
+        rn.alpha  = Math.min(1, rn.alpha + delta * 0.8)  // fade in
       }
     }
 
-    ctx.clearRect(0, 0, w, h)
+    // Phosphor persistence — fade previous frame instead of hard clear
+    ctx.fillStyle = 'rgba(0,0,0,0.90)'
+    ctx.fillRect(0, 0, w, h)
 
-    // ── Poincaré disk boundary + inner rings ─────────────────────────────
-    {
-      const diskR = Math.min(w, h) * 0.43
-      ctx.lineWidth = 0.8
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.18)`
-      ctx.beginPath(); ctx.arc(w*0.5, h*0.5, diskR, 0, Math.PI*2); ctx.stroke()
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.05)`
-      ctx.lineWidth = 0.4
-      ctx.beginPath(); ctx.arc(w*0.5, h*0.5, diskR*0.65, 0, Math.PI*2); ctx.stroke()
-      ctx.beginPath(); ctx.arc(w*0.5, h*0.5, diskR*0.32, 0, Math.PI*2); ctx.stroke()
-    }
+    // ── Blueprint grid — pre-baked offscreen, single drawImage per frame ──
+    if (this._gridCanvas) ctx.drawImage(this._gridCanvas, 0, 0)
 
-    // ── Scan line ────────────────────────────────────────────────────────
+    // ── Horizontal scan line ─────────────────────────────────────────────
     const scanY = ((this.time * 0.09) % 1.05) * h
-    const sg = ctx.createLinearGradient(0, scanY - 20, 0, scanY + 4)
-    sg.addColorStop(0, `rgba(${cr},${cg},${cb},0)`)
-    sg.addColorStop(1, `rgba(${cr},${cg},${cb},0.055)`)
-    ctx.fillStyle = sg
-    ctx.fillRect(0, scanY - 20, w, 24)
-    ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.13)`
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.04)`
     ctx.lineWidth = 0.5
     ctx.beginPath(); ctx.moveTo(0, scanY); ctx.lineTo(w, scanY); ctx.stroke()
 
-    // ── Network edges ────────────────────────────────────────────────────
-    for (const edge of this._edges) {
-      const na = this._nodes[edge.a], nb = this._nodes[edge.b]
-      if (!na || !nb) continue
-
-      const aActive = na.state === 'active', bActive = nb.state === 'active'
-      const bothActive   = aActive && bActive
-      const eitherActive = aActive || bActive
-
-      let a, lw
-      if (bothActive)        { a = 0.70 + this._beatFlash * 0.2; lw = 1.2 }
-      else if (eitherActive) { a = 0.28; lw = 0.7 }
-      else                   { a = Math.min(0.40, 0.07 * revealMult); lw = 0.4 }
-
-      // Blend the two endpoint node hues for edge color
-      const [r1,g1,b1] = hslToRgb((na.hue ?? 0) / 360, eitherActive ? 0.75 : 0.55, eitherActive ? 0.62 : 0.52)
-      const [r2,g2,b2] = hslToRgb((nb.hue ?? 0) / 360, eitherActive ? 0.75 : 0.55, eitherActive ? 0.62 : 0.52)
-      const eR = Math.round((r1 + r2) / 2 * 255)
-      const eG = Math.round((g1 + g2) / 2 * 255)
-      const eB = Math.round((b1 + b2) / 2 * 255)
-
-      ctx.strokeStyle = `rgba(${eR},${eG},${eB},${a})`
-      ctx.lineWidth   = lw
-      ctx.beginPath(); ctx.moveTo(na.x, na.y); ctx.lineTo(nb.x, nb.y); ctx.stroke()
-
-      if (eitherActive) {
-        const dx = nb.x - na.x, dy = nb.y - na.y
-        const len = Math.sqrt(dx * dx + dy * dy) || 1
-        const ux = dx / len, uy = dy / len
-        const tip = nb.size + 4
-        const ax = nb.x - ux * tip, ay = nb.y - uy * tip
-        const px = -uy * 4
-        ctx.fillStyle = `rgba(${eR},${eG},${eB},${a})`
+    // ── Radar sweep — vertical beam traversing sphere L→R→L ─────────────
+    {
+      const SWEEP_SPEED = 0.06  // full cycle every ~16s
+      this._sweepT = (this._sweepT + delta * SWEEP_SPEED) % 2
+      const t = this._sweepT < 1 ? this._sweepT : 2 - this._sweepT  // ping-pong 0→1→0
+      const pp2 = this._pp
+      if (pp2) {
+        const { SR, w: pw, h: ph } = pp2
+        const cx2 = pw * 0.5, cy2 = ph * 0.5
+        const sweepX = cx2 + (t * 2 - 1) * SR
+        const halfH  = Math.sqrt(Math.max(0, SR * SR - (sweepX - cx2) ** 2))
+        ctx.strokeStyle = `rgba(${acr},${acg},${acb},${0.07 + overall * 0.03})`
+        ctx.lineWidth   = 0.8
+        ctx.setLineDash([])
         ctx.beginPath()
-        ctx.moveTo(ax - ux * 8 + px, ay - uy * 8 - ux * 4)
-        ctx.lineTo(ax, ay)
-        ctx.lineTo(ax - ux * 8 - px, ay - uy * 8 + ux * 4)
-        ctx.fill()
+        ctx.moveTo(px(sweepX), cy2 - halfH)
+        ctx.lineTo(px(sweepX), cy2 + halfH)
+        ctx.stroke()
       }
+    }
+
+    // ── Network edges — SLERP curved arcs along sphere surface ───────────
+    const pp = this._pp
+    if (pp) {
+      const { rc, rs, ct, st, SR, s, FOCAL, w: pw, h: ph } = pp
+      // Project a world point through the same pipeline as nodes
+      const proj = (wx, wy, wz) => {
+        const rx0 = (wx * rc + wz * rs) * s
+        const ry0 =  wy * s
+        const rz0 = (-wx * rs + wz * rc) * s
+        const rx  = rx0
+        const ry  = ry0 * ct - rz0 * st
+        const rz  = ry0 * st + rz0 * ct
+        const dz  = Math.max(0.1, FOCAL - rz)
+        const p   = FOCAL / dz
+        return { x: pw*0.5 + rx*p, y: ph*0.5 + ry*p, depth: (rz + SR)/(2*SR) }
+      }
+
+      for (const edge of this._edges) {
+        const na = this._nodes[edge.a], nb = this._nodes[edge.b]
+        if (!na || !nb || na.wx == null || nb.wx == null) continue
+
+        const aActive = na.state === 'active', bActive = nb.state === 'active'
+        const bothActive   = aActive && bActive
+        const eitherActive = aActive || bActive
+
+        let alpha, lw
+        if (bothActive)        { alpha = 0.95; lw = 1.8 }
+        else if (eitherActive) { alpha = 0.55; lw = 1.1 }
+        else                   { alpha = 0.18 + this._mapReveal * 0.12; lw = 0.75 }
+
+        // CRT phosphor bloom on active edges, flat on dormant
+        if (bothActive) {
+          ctx.shadowBlur  = 5 + this._beatFlash * 10
+          ctx.shadowColor = `rgba(${acr},${acg},${acb},0.75)`
+        } else if (eitherActive) {
+          ctx.shadowBlur  = 2
+          ctx.shadowColor = `rgba(${acr},${acg},${acb},0.4)`
+        } else {
+          ctx.shadowBlur = 0
+        }
+
+        ctx.lineWidth = lw
+
+        // Active: mood color. Dormant: amber
+        const er = eitherActive ? acr : cr
+        const eg = eitherActive ? acg : cg
+        const eb = eitherActive ? acb : cb
+        const segColor = (t, depth) => {
+          const a = alpha * (depth * (edge.sameLine ? 0.88 : 0.75) + 0.06)
+          return `rgba(${er},${eg},${eb},${a})`
+        }
+
+        // Ring 0 is at origin — SLERP undefined; draw straight line to center
+        const aIsOrigin = (na._ring === 0), bIsOrigin = (nb._ring === 0)
+        if (aIsOrigin || bIsOrigin) {
+          const midDepth = ((na._projAlpha ?? 1) + (nb._projAlpha ?? 1)) / 2
+          ctx.strokeStyle = segColor(0.5, midDepth)
+          // Glitch: snap mid-point for center-spoke edges
+          const glitchMag0 = this._edgeGlitch
+          const mx = (na.x + nb.x) / 2, my = (na.y + nb.y) / 2
+          if (glitchMag0 > 0.1 && eitherActive) {
+            const seed = edge.a * 53 + edge.b * 29 + Math.floor(this.time * 8)
+            const rng  = ((seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff
+            if (rng < glitchMag0 * 0.5) {
+              const dx = (rng - 0.5) * glitchMag0 * 10
+              const dy = (((seed ^ 0xdeadbeef) & 0xff) / 255 - 0.5) * glitchMag0 * 6
+              ctx.beginPath(); ctx.moveTo(na.x, na.y); ctx.lineTo(mx + dx, my + dy)
+              ctx.lineTo(nb.x, nb.y); ctx.stroke()
+              continue
+            }
+          }
+          ctx.beginPath(); ctx.moveTo(na.x, na.y); ctx.lineTo(nb.x, nb.y); ctx.stroke()
+        } else {
+          // SLERP along sphere surface: sample N intermediate points, project each
+          const STEPS = eitherActive ? 12 : 7
+          const pts = []
+          for (let si = 0; si <= STEPS; si++) {
+            const t  = si / STEPS
+            const [ix, iy, iz] = slerpSphere(na.wx, na.wy, na.wz||0, nb.wx, nb.wy, nb.wz||0, t)
+            pts.push({ ...proj(ix, iy, iz), t })
+          }
+
+          // Edge glitch: on strong beats, randomly snap a 1-3 segment run sideways
+          const glitchMag = this._edgeGlitch
+          let glitchRun = null
+          if (glitchMag > 0.08 && eitherActive) {
+            // Each edge independently decides whether to glitch this frame
+            const seed = edge.a * 31 + edge.b * 17 + Math.floor(this.time * 8)
+            const rng  = ((seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff
+            if (rng < glitchMag * 0.7) {
+              const start = 1 + Math.floor(rng * (STEPS - 2))
+              const len   = 1 + Math.floor((rng * 7919 % 1) * 3)
+              const dx    = (((seed * 1664525 + 1013904223) & 0xff) / 255 - 0.5) * glitchMag * 12
+              const dy    = (((seed * 214013  + 2531011)   & 0xff) / 255 - 0.5) * glitchMag * 5
+              glitchRun   = { start, end: Math.min(STEPS, start + len), dx, dy }
+            }
+          }
+
+          pts.forEach((pt, i) => {
+            if (i === 0) return
+            const prev = pts[i - 1]
+            let px1 = prev.x, py1 = prev.y, px2 = pt.x, py2 = pt.y
+            if (glitchRun && i >= glitchRun.start && i <= glitchRun.end) {
+              px1 += glitchRun.dx; py1 += glitchRun.dy
+              px2 += glitchRun.dx; py2 += glitchRun.dy
+            }
+            ctx.strokeStyle = segColor(pt.t, pt.depth)
+            ctx.beginPath(); ctx.moveTo(px1, py1); ctx.lineTo(px2, py2); ctx.stroke()
+          })
+        }
+      }
+    }
+
+    ctx.shadowBlur = 0
+
+    // ── Sphere equator outline — single crisp ring (Pioneer plaque) ──────
+    if (pp) {
+      const { SR, w: pw, h: ph } = pp
+      const scx = pw * 0.5, scy = ph * 0.5
+      ctx.setLineDash([])
+      ctx.lineWidth = 1.5
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${0.45 + this._beatFlash * 0.20})`
+      ctx.beginPath(); ctx.arc(px(scx), px(scy), SR, 0, Math.PI * 2); ctx.stroke()
+    }
+
+    // ── Sphere wireframe — 4 latitude rings + 8 longitude lines + tick marks ──
+    if (pp) {
+      const { rc, rs, ct, st, SR, s, FOCAL, w: pw, h: ph } = pp
+      const projWF = (wx, wy, wz) => {
+        const rx0 = (wx * rc + wz * rs) * s
+        const ry0 =  wy * s
+        const rz0 = (-wx * rs + wz * rc) * s
+        const ry  = ry0 * ct - rz0 * st
+        const rz  = ry0 * st + rz0 * ct
+        const dz  = Math.max(0.1, FOCAL - rz)
+        const p   = FOCAL / dz
+        return { x: pw*0.5 + rx0*p, y: ph*0.5 + ry*p, depth: (rz + SR)/(2*SR) }
+      }
+
+      const WF_BASE = 0.28 + this._mapReveal * 0.20
+
+      // Latitude rings — 4 rings, dashed
+      ctx.setLineDash([3, 7])
+      ctx.lineWidth = 0.8
+      const LAT_THETAS = [Math.PI*0.22, Math.PI*0.40, Math.PI*0.60, Math.PI*0.78]
+      for (const theta of LAT_THETAS) {
+        const rLat = Math.sin(theta), yLat = Math.cos(theta)
+        const STEPS = 48
+        let prev = null
+        for (let i = 0; i <= STEPS; i++) {
+          const phi = (i / STEPS) * Math.PI * 2
+          const pt = projWF(SR * rLat * Math.cos(phi), SR * yLat, SR * rLat * Math.sin(phi))
+          if (prev && pt.depth > 0.05) {
+            ctx.strokeStyle = `rgba(${cr},${cg},${cb},${WF_BASE * pt.depth})`
+            ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(pt.x, pt.y); ctx.stroke()
+          }
+          prev = pt
+        }
+      }
+
+      // Longitude lines — 8 lines + tick marks (Pioneer plaque pulsar style)
+      const LON_COUNT  = 8
+      const STEPS_LON  = 28
+      const TICK_EVERY = 5    // every ~32° of arc
+      const TICK_LEN   = 3.0
+
+      for (let li = 0; li < LON_COUNT; li++) {
+        const phi = (li / LON_COUNT) * Math.PI * 2
+        const pts = []
+        for (let si = 0; si <= STEPS_LON; si++) {
+          const theta = (si / STEPS_LON) * Math.PI
+          pts.push(projWF(
+            SR * Math.sin(theta) * Math.cos(phi),
+            SR * Math.cos(theta),
+            SR * Math.sin(theta) * Math.sin(phi)
+          ))
+        }
+
+        // Longitude arc (dashed)
+        ctx.setLineDash([3, 7])
+        ctx.lineWidth = 0.8
+        for (let si = 1; si <= STEPS_LON; si++) {
+          const pt = pts[si], prev = pts[si - 1]
+          if (pt.depth > 0.05) {
+            ctx.strokeStyle = `rgba(${cr},${cg},${cb},${WF_BASE * pt.depth})`
+            ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(pt.x, pt.y); ctx.stroke()
+          }
+        }
+
+        // Tick marks — perpendicular to arc, Pioneer plaque style
+        ctx.setLineDash([])
+        ctx.lineWidth = 1.0
+        for (let si = TICK_EVERY; si < STEPS_LON; si += TICK_EVERY) {
+          const pt = pts[si], prv = pts[Math.max(0, si - 1)]
+          if (pt.depth < 0.15) continue
+          const tx = pt.x - prv.x, ty = pt.y - prv.y
+          const len = Math.sqrt(tx*tx + ty*ty) || 1
+          const nx = -ty / len * TICK_LEN, ny = tx / len * TICK_LEN
+          ctx.strokeStyle = `rgba(${cr},${cg},${cb},${WF_BASE * pt.depth * 0.8})`
+          ctx.beginPath()
+          ctx.moveTo(pt.x - nx, pt.y - ny)
+          ctx.lineTo(pt.x + nx, pt.y + ny)
+          ctx.stroke()
+        }
+      }
+      ctx.setLineDash([])
     }
 
     // ── B: Edge signal pulses ────────────────────────────────────────────
@@ -836,12 +1282,14 @@ export class DataOverlay {
     }
 
     // ── Detection nodes ──────────────────────────────────────────────────
-    const drawNodes = this._nodes
+    const drawNodes = this._drawOrder ?? this._nodes
     for (const n of drawNodes) {
       n.activeTimer += delta
 
       if (n.state === 'dormant') {
-        const target = n.isTitle ? 0.55 : n.isCore ? 0.32 : 0.20
+        // Brightness decreases by ring: center = always prominent, outer = barely visible
+        const RING_ALPHA = [0.95, 0.78, 0.58, 0.38, 0.20, 0.11, 0.06]
+        const target = RING_ALPHA[Math.min(n._ring ?? 6, RING_ALPHA.length - 1)]
         n.alpha += (target - n.alpha) * Math.min(1, delta * 1.8)
       } else if (n.state === 'active') {
         n.alpha = Math.min(0.92, n.alpha + delta * 4)
@@ -853,104 +1301,122 @@ export class DataOverlay {
         if (n.alpha <= 0.07) n.state = 'dormant'
       }
 
-      const beatBoost  = n.state === 'active' ? this._beatFlash * 0.30 : 0
-      const projAlpha  = n._projAlpha ?? 1
-      const projScale  = n._projScale ?? 1
-      const a = Math.min(1, (n.alpha + beatBoost) * projAlpha)
+      const beatBoost = n.state === 'active' ? this._beatFlash * 0.35 : 0
+      const projAlpha = n._projAlpha ?? 1
+      const projScale = n._projScale ?? 1
       const isActive  = n.state === 'active'
-      const showLabel = isActive || n.isTitle || (n.isCore && n.alpha > 0.15) || (this._mapPinned && n.display)
+      const isHub     = (n._ring ?? 99) <= 1   // ring 0,1 = hub nodes
+      const a = Math.min(1, (n.alpha + beatBoost) * projAlpha)
+      const showLabel = isActive || (isHub && a > 0.25) || (this._mapPinned && n.display)
 
-      // Per-node color from hue
-      const nSat = (n.isConnector || n.isAttach) ? 0.20 : 0.82
-      const nLit = isActive ? 0.70 : (n.isCore ? 0.58 : 0.48)
-      const [nr, ng, nb_] = hslToRgb((n.hue ?? 0) / 360, nSat, nLit)
-      const nR = Math.round(nr * 255), nG = Math.round(ng * 255), nB = Math.round(nb_ * 255)
+      // Perspective-scaled draw size — hubs large, leaves tiny
+      const drawSize = Math.max(1.5, n.size * projScale)
 
-      const drawSize = Math.max(2, n.size * projScale)
-      ctx.lineWidth   = isActive ? 1.5 + (drawSize / 40) * 0.8 : (this._mapPinned ? 0.8 : 0.5)
-      ctx.strokeStyle = `rgba(${nR},${nG},${nB},${a})`
+      const r3      = Math.max(1.5, drawSize * 0.55)
+      const isCenter = (n._ring ?? 99) === 0
+      const isMid    = (n._ring ?? 99) <= 3 && !isHub   // ring 2-3: middle layer
 
-      // Glow on active nodes
-      if (isActive) {
-        ctx.shadowBlur  = 10 + drawSize * 0.5
-        ctx.shadowColor = `hsl(${n.hue ?? 0},85%,65%)`
+      // Back-facing tiny nodes → cheap dot (skip full render)
+      if (!isActive && !isHub && projAlpha < 0.20 && drawSize < 5) {
+        ctx.beginPath()
+        ctx.arc(n.x, n.y, Math.max(1.2, r3 * 0.5), 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${cr},${cg},${cb},${a * 0.55})`
+        ctx.fill()
+        continue
       }
 
-      if (n.type === 'circle') {
-        ctx.beginPath(); ctx.arc(n.x, n.y, drawSize, 0, Math.PI * 2)
-        // Fill: active = semi-fill, core = very faint fill
-        if (isActive) {
-          ctx.fillStyle = `rgba(${nR},${nG},${nB},${a * 0.16})`
-          ctx.fill()
-        } else if (n.isCore && n.alpha > 0.2) {
-          ctx.fillStyle = `rgba(${nR},${nG},${nB},${a * 0.05})`
-          ctx.fill()
-        }
-        ctx.stroke()
-        if (isActive) { ctx.shadowBlur = 0 }
+      // ── Node sizing — Pioneer plaque: generous, readable ─────────────────
+      const dotR   = Math.max(1.5, r3 * (isActive ? 0.38 : isHub ? 0.32 : 0.25))
+      const outerR = isActive ? Math.max(4.0, drawSize * 0.80) : Math.max(2.5, r3 * 1.0)
 
-        if (showLabel) {
-          if (isActive) {
-            const ch = drawSize * 0.5
-            ctx.globalAlpha = a * 0.45
-            ctx.beginPath()
-            ctx.moveTo(n.x - ch, n.y); ctx.lineTo(n.x + ch, n.y)
-            ctx.moveTo(n.x, n.y - ch); ctx.lineTo(n.x, n.y + ch)
-            ctx.stroke()
-            ctx.globalAlpha = 1
-            ctx.beginPath(); ctx.arc(n.x, n.y, 2, 0, Math.PI * 2)
-            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`; ctx.fill()
+      // ── CRT Phosphor (active) vs Flat Engraved (dormant) ─────────────────
+      const beatBoostGlow = this._beatFlash * 16
 
-            const goRight = n.x < w * 0.62
-            const fz  = Math.max(7, 9 + Math.round(drawSize / 12))
-            const dir = goRight ? 1 : -1
-            const ax  = goRight ? n.x + drawSize : n.x - drawSize
-            const ex  = ax + dir * (28 + drawSize * 0.4)
-            ctx.lineWidth = 0.9; ctx.strokeStyle = `rgba(${nR},${nG},${nB},${a * 0.7})`
-            ctx.beginPath(); ctx.moveTo(ax, n.y); ctx.lineTo(ex, n.y); ctx.stroke()
-            ctx.beginPath()
-            ctx.moveTo(ex - dir * 7, n.y - 4); ctx.lineTo(ex, n.y); ctx.lineTo(ex - dir * 7, n.y + 4)
-            ctx.stroke()
-            ctx.font = `bold ${fz}px Arial, sans-serif`
-            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
-            ctx.textAlign = goRight ? 'left' : 'right'
-            ctx.fillText(n.display, ex + dir * 6, n.y + fz * 0.38)
-          } else {
-            ctx.font = `300 9px 'Courier New', monospace`
-            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
-            ctx.textAlign = 'center'
-            ctx.fillText(n.display, n.x, n.y + n.size + 12)
-          }
-          ctx.textAlign = 'left'
-        }
+      if (isActive) {
+        // Active: mood color CRT phosphor bloom
+        ctx.shadowBlur  = 14 + drawSize * 0.6 + beatBoostGlow
+        ctx.shadowColor = `rgba(${acr},${acg},${acb},0.95)`
+
+        ctx.lineWidth   = 2.5
+        ctx.strokeStyle = `rgba(${acr},${acg},${acb},${a})`
+        ctx.beginPath(); ctx.arc(n.x, n.y, outerR, 0, Math.PI * 2); ctx.stroke()
+
+        // Phosphor halo ring
+        ctx.lineWidth   = 1.0
+        ctx.shadowBlur  = 0
+        ctx.strokeStyle = `rgba(${acr},${acg},${acb},${a * 0.20})`
+        ctx.beginPath(); ctx.arc(n.x, n.y, outerR * 2.0, 0, Math.PI * 2); ctx.stroke()
+
+        const dotBright  = Math.min(255, acr + 23)
+        const dotBrightG = Math.min(255, acg + 38)
+        ctx.fillStyle = `rgba(${dotBright},${dotBrightG},${acb},${a})`
+        ctx.beginPath(); ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2); ctx.fill()
 
       } else {
-        ctx.save(); ctx.translate(n.x, n.y); ctx.rotate(n.rot)
-        const half = drawSize * 0.7, tall = drawSize * 1.1
-        if (isActive) {
-          ctx.fillStyle = `rgba(${nR},${nG},${nB},${a * 0.14})`
-          ctx.fillRect(-half, -tall * 0.5, half * 2, tall)
-        }
-        ctx.strokeRect(-half, -tall * 0.5, half * 2, tall)
-        ctx.restore()
-        if (isActive) { ctx.shadowBlur = 0 }
+        // Dormant: flat crisp — Pioneer plaque style
+        ctx.shadowBlur = 0
+        // Depth fading reduced: back nodes still clearly readable
+        const depthFactor = 0.12 + projAlpha * 0.88   // back ~12%, front ~100%
+        const outlineAlpha = depthFactor * (isHub ? 0.90 : isMid ? 0.75 : 0.58)
+        ctx.lineWidth   = isHub ? 1.6 : isMid ? 1.2 : 0.9
+        ctx.strokeStyle = `rgba(${dcr},${dcg},${dcb},${outlineAlpha})`
+        ctx.beginPath(); ctx.arc(n.x, n.y, outerR, 0, Math.PI * 2); ctx.stroke()
 
-        if (showLabel) {
-          if (isActive) {
-            const fz = Math.max(7, 9 + Math.round(drawSize / 14))
-            ctx.font = `bold ${fz}px Arial, sans-serif`
-            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
-            ctx.textAlign = 'center'
-            ctx.fillText(n.display, n.x, n.y + tall * 0.5 + fz + 4)
+        const dotAlpha = depthFactor * (isHub ? 1.0 : isMid ? 0.82 : 0.65)
+        ctx.fillStyle = `rgba(${dcr},${dcg},${dcb},${dotAlpha})`
+        ctx.beginPath(); ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2); ctx.fill()
+      }
+
+      // All node types: same circle rendering — box type no longer used
+      if (showLabel) {
+        if (isActive) {
+            // Crosshair tick marks (short, outside ring)
+            const ch = outerR + 5
+            const ct = 4  // tick length
+            ctx.globalAlpha = a * 0.55
+            ctx.strokeStyle = `rgba(${acr},${acg},${acb},${a})`
+            ctx.lineWidth = 1.4
+            ctx.beginPath()
+            ctx.moveTo(n.x - ch, n.y); ctx.lineTo(n.x - ch + ct, n.y)
+            ctx.moveTo(n.x + ch - ct, n.y); ctx.lineTo(n.x + ch, n.y)
+            ctx.moveTo(n.x, n.y - ch); ctx.lineTo(n.x, n.y - ch + ct)
+            ctx.moveTo(n.x, n.y + ch - ct); ctx.lineTo(n.x, n.y + ch)
+            ctx.stroke()
+            ctx.globalAlpha = 1
+
+            const goRight = n.x < w * 0.58
+            const fz  = Math.max(8, 10 + Math.round(drawSize / 18))
+            const dir = goRight ? 1 : -1
+            const diagLen = 12 + drawSize * 0.3
+            const horzLen = 28 + drawSize * 0.6
+            const startX  = n.x + dir * outerR
+            const midX    = startX + dir * diagLen
+            const midY    = n.y - 10
+            const endX    = midX + dir * horzLen
+            ctx.lineWidth = 1.2; ctx.strokeStyle = `rgba(${acr},${acg},${acb},${a * 0.70})`
+            ctx.beginPath()
+            ctx.moveTo(startX, n.y)
+            ctx.lineTo(midX, midY)
+            ctx.lineTo(endX, midY)
+            ctx.stroke()
+            ctx.beginPath()
+            ctx.moveTo(endX, midY - 3)
+            ctx.lineTo(endX, midY + 3)
+            ctx.stroke()
+            ctx.font = `700 ${fz}px 'Space Mono', 'Noto Sans KR', monospace`
+            ctx.fillStyle = `rgba(${acr},${acg},${acb},${a})`
+            ctx.textAlign = goRight ? 'left' : 'right'
+            ctx.fillText((n.display ?? n.word).toUpperCase(), endX + dir * 6, midY + fz * 0.36)
           } else {
-            ctx.font = `300 9px 'Courier New', monospace`
-            ctx.fillStyle = `rgba(${nR},${nG},${nB},${a})`
-            ctx.textAlign = 'center'
-            ctx.fillText(n.display, n.x, n.y + tall * 0.5 + 14)
+            // ATC waypoint style — code right of symbol, vertically centered
+            ctx.font = `400 7px 'Space Mono', 'Noto Sans KR', monospace`
+            ctx.fillStyle = `rgba(${dcr},${dcg},${dcb},${a * 0.72})`
+            ctx.textAlign = 'left'
+            ctx.fillText((n.display ?? n.word).toUpperCase(), n.x + outerR + 3, n.y + 2.5)
           }
           ctx.textAlign = 'left'
         }
-      }
+      ctx.shadowBlur = 0
     }
 
     // ── A: Sonar pings ───────────────────────────────────────────────────
@@ -960,8 +1426,8 @@ export class DataOverlay {
       p.r     += p.spd * delta
       p.alpha -= delta * 1.6
       if (p.alpha <= 0 || p.r >= p.maxR) { this._pings.splice(i, 1); continue }
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${p.alpha * 0.65})`
-      ctx.lineWidth   = 0.8 + bass * 1.5
+      ctx.strokeStyle = `rgba(${acr},${acg},${acb},${p.alpha * 0.65})`
+      ctx.lineWidth   = 1.2 + bass * 1.8
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.stroke()
     }
 
@@ -972,7 +1438,7 @@ export class DataOverlay {
       lo.alpha -= delta * 2.8
       if (lo.alpha <= 0) { this._lockOns.splice(i, 1); continue }
       const s = lo.r, bl = s * 0.38
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${lo.alpha})`
+      ctx.strokeStyle = `rgba(${acr},${acg},${acb},${lo.alpha})`
       ctx.lineWidth   = 1.2
       for (const [sx, sy] of [[-1,-1],[1,-1],[-1,1],[1,1]]) {
         const bx = lo.x + sx * s, by = lo.y + sy * s
@@ -999,13 +1465,7 @@ export class DataOverlay {
             const n = this._nodes[idx]
             if (!n) continue
             ctx.strokeStyle = `rgba(${cr},${cg},${cb},${a})`
-            if (n.type === 'circle') {
-              ctx.beginPath(); ctx.arc(n.x, n.y, n.size * 1.35, 0, Math.PI * 2); ctx.stroke()
-            } else {
-              ctx.save(); ctx.translate(n.x, n.y); ctx.rotate(n.rot)
-              ctx.strokeRect(-n.size * 0.85, -n.size * 0.6, n.size * 1.7, n.size * 1.2)
-              ctx.restore()
-            }
+            ctx.beginPath(); ctx.arc(n.x, n.y, n.size * 1.2, 0, Math.PI * 2); ctx.stroke()
           }
         } else if (!wave.fired) {
           allDone = false
@@ -1182,26 +1642,108 @@ export class DataOverlay {
       })
     }
 
-    // ── Corner brackets ──────────────────────────────────────────────────
-    const pad = 16, blen = 16
-    const bA = 0.20 + overall * 0.08 + this._beatFlash * 0.12
-    ctx.strokeStyle = `rgba(${cr},${cg},${cb},${bA})`
-    ctx.lineWidth = 1
-    for (const [x, y, sx, sy] of [[pad,pad,1,1],[w-pad,pad,-1,1],[pad,h-pad,1,-1],[w-pad,h-pad,-1,-1]]) {
-      ctx.beginPath(); ctx.moveTo(x+sx*blen,y); ctx.lineTo(x,y); ctx.lineTo(x,y+sy*blen); ctx.stroke()
+    // ── Recommendation nodes — outer shell, always visible ───────────────
+    for (const rn of this._recNodes) {
+      if (rn.x == null) continue
+      rn.alpha = Math.min(0.92, rn.alpha + delta * 0.6)
+      const depth = rn._depth ?? 0.5
+      const a     = rn.alpha * (depth * 0.7 + 0.3)
+      const H     = rn.hue
+      const R     = 10   // fixed small radius
+
+      // Hover detection — brighten if mouse nearby
+      const hovered = this._hoverX != null && Math.hypot(rn.x - this._hoverX, rn.y - this._hoverY) < 36
+
+      // Glow
+      const glowR = R * (hovered ? 4.5 : 3.0)
+      const grd   = ctx.createRadialGradient(rn.x, rn.y, 0, rn.x, rn.y, glowR)
+      grd.addColorStop(0, `hsla(${H},85%,65%,${a * (hovered ? 0.9 : 0.5)})`)
+      grd.addColorStop(1, `hsla(${H},80%,55%,0)`)
+      ctx.beginPath(); ctx.arc(rn.x, rn.y, glowR, 0, Math.PI * 2)
+      ctx.fillStyle = grd; ctx.fill()
+
+      // Dashed ring (detector style)
+      ctx.save()
+      ctx.setLineDash([3, 4])
+      ctx.strokeStyle = `hsla(${H},80%,65%,${a * (hovered ? 0.9 : 0.45)})`
+      ctx.lineWidth   = 0.8
+      ctx.beginPath(); ctx.arc(rn.x, rn.y, R + 4, 0, Math.PI * 2); ctx.stroke()
+      ctx.setLineDash([])
+      ctx.restore()
+
+      // Core dot
+      ctx.beginPath(); ctx.arc(rn.x, rn.y, R * 0.55, 0, Math.PI * 2)
+      ctx.fillStyle = `hsla(${H},90%,70%,${a})`
+      ctx.fill()
+
+      // Label — track name + artist (always shown, monospace)
+      const fz   = hovered ? 9 : 8
+      const goRight = rn.x < w * 0.6
+      const lx   = goRight ? rn.x + R + 8 : rn.x - R - 8
+      ctx.font      = `300 ${fz}px 'Courier New', monospace`
+      ctx.textAlign = goRight ? 'left' : 'right'
+      ctx.fillStyle = `hsla(${H},70%,72%,${a * (hovered ? 1.0 : 0.7)})`
+      ctx.fillText(rn.label, lx, rn.y - 2)
+      ctx.fillStyle = `hsla(${H},50%,55%,${a * (hovered ? 0.7 : 0.4)})`
+      ctx.font      = `300 7px 'Courier New', monospace`
+      ctx.fillText(rn.artist, lx, rn.y + 9)
+
+      // Click hint on hover
+      if (hovered) {
+        ctx.font      = `300 6px 'Courier New', monospace`
+        ctx.fillStyle = `hsla(${H},60%,65%,${a * 0.55})`
+        ctx.fillText('▶ PLAY', lx, rn.y + 19)
+      }
     }
 
-    // ── HUD text ─────────────────────────────────────────────────────────
-    const frame = String(Math.floor(this.time * 30)).padStart(6, '0')
-    const code  = this._trackCode || 'SECTOR-00-0000'
-    const hA    = 0.26 + overall * 0.10
-    ctx.font      = `300 9px 'Courier New', monospace`
+    // ── Corner brackets ──────────────────────────────────────────────────
+    const pad = 16, blen = 16
+    const bA = 0.50 + overall * 0.15 + this._beatFlash * 0.20
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},${bA})`
+    ctx.lineWidth = 1.5
+    for (const [x, y, sx, sy] of [[pad,pad,1,1],[w-pad,pad,-1,1],[pad,h-pad,1,-1],[w-pad,h-pad,-1,-1]]) {
+      ctx.beginPath()
+      ctx.moveTo(px(x+sx*blen), px(y))
+      ctx.lineTo(px(x), px(y))
+      ctx.lineTo(px(x), px(y+sy*blen))
+      ctx.stroke()
+    }
+
+    // ── HUD text (geo viz / Pioneer plaque data display style) ───────────
+    const frame  = String(Math.floor(this.time * 30)).padStart(6, '0')
+    const code   = this._trackCode || 'SECTOR-00-0000'
+    const hA     = 0.55 + overall * 0.15
+    const nodeN  = this._nodes.length
+    const edgeN  = this._edges.length
+    const actN   = this._nodes.filter(n => n.state === 'active').length
+
+    ctx.font = `400 9px 'Space Mono', 'Courier New', monospace`
+
+    // Top-left data block
     ctx.fillStyle = `rgba(${cr},${cg},${cb},${hA})`
     ctx.textAlign = 'left'
-    ctx.fillText('CAM 1', pad + 2, pad + 12)
+    const tlLines = [
+      `OBJ / ${code}`,
+      `NODES  ${String(nodeN).padStart(4)}`,
+      `EDGES  ${String(edgeN).padStart(4)}`,
+      `ACTIVE ${String(actN).padStart(4)}`,
+    ]
+    tlLines.forEach((ln, i) => ctx.fillText(ln, pad + 4, pad + 14 + i * 13))
+
+    // Bottom-left: frame + beat indicator
+    const beatIndicator = (bass > 0.5) ? '◆' : (bass > 0.25) ? '◇' : '·'
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},${hA})`
+    ctx.fillText(`FRM  ${frame}`, pad + 4, h - pad - 16)
+    ctx.fillText(`LVL  ${beatIndicator} ${Math.round(overall * 100).toString().padStart(3)}`, pad + 4, h - pad - 4)
+
+    // Bottom-center: track code
     ctx.textAlign = 'center'
-    ctx.fillText(`${code}  ·  ${frame}`, cx, h - pad - 4)
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},${hA * 0.8})`
+    ctx.fillText(code, cx, h - pad - 4)
+
     ctx.textAlign = 'left'
+    ctx.shadowBlur = 0
+
   }
 
   destroy() { this.canvas.remove() }

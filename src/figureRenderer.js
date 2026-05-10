@@ -249,12 +249,12 @@ export class FigureRenderer {
 
     // ── Lyric text ─────────────────────────────────────────────────────────────
     if (this._lyric) {
-      ctx.font        = `300 13px 'Courier New', monospace`
+      ctx.font        = `300 15px 'Noto Sans KR', 'Space Mono', monospace`
       ctx.textAlign   = 'center'
-      ctx.shadowColor = 'rgba(0,0,0,0.85)'
-      ctx.shadowBlur  = 6
-      ctx.fillStyle   = '#ffffff'
-      ctx.fillText(this._lyric, w * 0.5, h * 0.05)
+      ctx.shadowColor = 'rgba(0,0,0,0.95)'
+      ctx.shadowBlur  = 8
+      ctx.fillStyle   = `rgba(${this.r},${this.g},${this.b},0.82)`
+      ctx.fillText(this._lyric, w * 0.5, h * 0.88)
       ctx.shadowBlur  = 0
       ctx.textAlign   = 'left'
     }

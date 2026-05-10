@@ -137,8 +137,32 @@ async function apiPost(path) {
   })
 }
 
+async function apiPut(path, body) {
+  const token = await getToken()
+  await fetch(`https://api.spotify.com/v1${path}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export const skipToNext     = () => apiPost('/me/player/next')
 export const skipToPrevious = () => apiPost('/me/player/previous')
+
+export async function getRecommendations(trackId, features) {
+  const params = new URLSearchParams({ seed_tracks: trackId, limit: 7 })
+  if (features) {
+    if (features.energy  != null) params.set('target_energy',  features.energy.toFixed(2))
+    if (features.valence != null) params.set('target_valence', features.valence.toFixed(2))
+    if (features.tempo   != null) params.set('target_tempo',   Math.round(features.tempo))
+  }
+  const data = await apiFetch(`/recommendations?${params}`)
+  return data?.tracks ?? []
+}
+
+export function playTrack(trackUri) {
+  return apiPut('/me/player/play', { uris: [trackUri] })
+}
 
 export async function getCurrentTrack() {
   return apiFetch('/me/player/currently-playing')

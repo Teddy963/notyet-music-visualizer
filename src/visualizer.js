@@ -134,20 +134,33 @@ const glitchFrag = `
   void main(){
     vec2 uv = vUv;
 
-    // ── Subtle chromatic aberration ──
-    float aber = uBeat * 0.001 + uBass * 0.0004 + uOverall * 0.0002 + uBeatFlash * 0.0015;
-    float r = texture2D(uScene, uv + vec2( aber, aber * 0.3)).r;
-    float g = texture2D(uScene, uv                          ).g;
-    float b = texture2D(uScene, uv - vec2( aber, aber * 0.3)).b;
+    // ── Horizontal scan displacement — beat/bass triggered glitch ──
+    float glitchPow = uBeatFlash * 1.4 + uBass * 0.5;
+    float scanRow = floor(uv.y * 180.0);
+    float glitchRnd = rand(vec2(scanRow, floor(uTime * 14.0)));
+    if (glitchPow > 0.05 && glitchRnd > (1.0 - glitchPow * 0.14)) {
+      float disp = (rand(vec2(scanRow + 0.7, uTime)) - 0.5) * 0.055 * glitchPow;
+      uv.x = fract(uv.x + disp);
+    }
+
+    // ── Chromatic aberration — much stronger on beats ──
+    float aber = uBeat * 0.005 + uBass * 0.002 + uOverall * 0.001 + uBeatFlash * 0.014;
+    float r = texture2D(uScene, uv + vec2( aber, 0.0)).r;
+    float g = texture2D(uScene, uv                  ).g;
+    float b = texture2D(uScene, uv - vec2( aber, 0.0)).b;
     vec3 col = vec3(r, g, b);
 
-    // ── Fine film grain ──
-    float grain = (rand(vUv + fract(uTime * 0.5)) - 0.5) * 0.028 * (0.5 + uOverall * 0.5);
+    // ── Film grain ──
+    float grain = (rand(vUv + fract(uTime * 0.5)) - 0.5) * 0.07 * (0.5 + uOverall * 0.5);
     col += grain;
+
+    // ── Scanlines ──
+    float scan = mod(gl_FragCoord.y, 2.0) < 1.0 ? 0.78 : 1.0;
+    col *= scan;
 
     // ── Vignette ──
     vec2 vig = vUv * 2.0 - 1.0;
-    col *= 1.0 - dot(vig, vig) * 0.42;
+    col *= 1.0 - dot(vig, vig) * 0.45;
 
     gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
   }
@@ -307,7 +320,7 @@ export class Visualizer {
     this._driftTarget = null
     this._driftLerp = 0
     // Expose accent color for overlay
-    this.accentRGB=[220,255,80]
+    this.accentRGB=[232,175,0]  // AMBER LOCK
     this._inverted = false
 
     this._onResize=this._onResize.bind(this)

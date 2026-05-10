@@ -1,5 +1,5 @@
 import './style.css'
-import { login, handleCallback, isLoggedIn, startPolling, initPlayer, transferPlayback, getLyrics, getPlaybackState, skipToNext, skipToPrevious } from './spotify.js'
+import { login, handleCallback, isLoggedIn, startPolling, initPlayer, transferPlayback, getLyrics, getPlaybackState, skipToNext, skipToPrevious, getRecommendations, playTrack } from './spotify.js'
 import { analyzeLyrics } from './moodAnalyzer.js'
 import { AudioSync } from './audioSync.js'
 import { Visualizer } from './visualizer.js'
@@ -269,6 +269,7 @@ function launchVisualizer(audioSource) {
     _lastLineIdx = -1
     overlay.setSubtitle('')
     overlay.setLines([])
+    overlay.setRecommendations([])
     overlay.clearAccumRings()
     overlay.setTrack(track.name)
     figureRenderer.setActiveLine('')
@@ -306,7 +307,25 @@ function launchVisualizer(audioSource) {
       updateInfoPanel(features)
     }
     if (analysis && audioSource.setAnalysis) audioSource.setAnalysis(analysis, features)
+
+    // Fetch recommendations in background — load into overlay when ready
+    if (track.id) {
+      getRecommendations(track.id, features).then(recTracks => {
+        if (_currentTrackId !== trackId) return  // track changed, discard
+        overlay.setRecommendations(recTracks)
+        console.log('[rec]', recTracks.length, 'tracks loaded')
+      }).catch(() => {})
+    }
   })
+
+  // Rec node click → play immediately
+  overlay.onRecClick = async (track) => {
+    try {
+      await playTrack(track.uri)
+    } catch (e) {
+      console.warn('[rec] playTrack failed:', e)
+    }
+  }
 
   let lastTime = performance.now()
   function animate() {
@@ -329,7 +348,7 @@ function launchVisualizer(audioSource) {
       const elapsed = performance.now() - _lyricsFetch
       const pos = _lyricsPos + elapsed
       const result = _findCurrentLine(pos)
-      if (result && result.words !== _lastLine) {
+      if (result && (result.words !== _lastLine || result.idx !== _lastLineIdx)) {
         _lastLine = result.words
         _lastLineIdx = result.idx
         const mood = _moodMap?.[result.idx] ?? null
