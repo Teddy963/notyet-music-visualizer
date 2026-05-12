@@ -233,6 +233,8 @@ function _startPositionPolling(onPause) {
         if (!playing && _lastLine) onPause?.()
         _lyricsActive = playing && !!_lyrics?.length
         _updatePauseIcon(state.paused)
+        // Song progress → nebula bloom at song end
+        if (state.duration > 0) overlay.setSongProgress(state.position / state.duration)
       }
     } catch {}
   }
@@ -299,6 +301,7 @@ function launchVisualizer(audioSource) {
   let _currentTrackId = null
 
   const sdkStateHandler = startPolling(async (track, features, analysis) => {
+
     const trackId = track.id ?? track.name
     _currentTrackId = trackId
 
@@ -376,11 +379,26 @@ function launchVisualizer(audioSource) {
           getRecommendations(track, []).catch(() => []),
         ]).then(([kwTracks, artistTracks]) => {
           if (_currentTrackId !== trackId) return
-          kwTracks.forEach(t => { t._recType = 'lyric'; t._sourceKeywords = keywords })
+          kwTracks.forEach(t => { t._recType = 'lyric'; t._sourceKeywords = keywords; t._moodHue = avgHue })
           artistTracks.forEach(t => { t._recType = 'artist' })
+          // Normalize title: strip feat/remix/remaster/live/version suffixes
+          const baseTitle = name => name.toLowerCase()
+            .replace(/\s*[\(\[]\s*(feat|ft|with|prod|remix|remaster|remastered|live|acoustic|version|edit|radio|explicit|clean|deluxe|bonus)\b[^\)\]]*[\)\]]/gi, '')
+            .replace(/\s*-\s*(remix|remaster|remastered|live|acoustic|version|edit|radio)\b.*/gi, '')
+            .trim()
+          const baseArtist = t => t.artists?.[0]?.name?.toLowerCase() ?? ''
+          const currentBase = baseTitle(track.name)
+          const currentArtist = baseArtist(track)
+
           const seen = new Set([track.id])
+          const seenBases = new Set([`${currentArtist}::${currentBase}`])
           const merged = []
-          const add = t => { if (t && !seen.has(t.id)) { seen.add(t.id); merged.push(t) } }
+          const add = t => {
+            if (!t || seen.has(t.id)) return
+            const key = `${baseArtist(t)}::${baseTitle(t.name)}`
+            if (seenBases.has(key)) return   // same song, different version
+            seen.add(t.id); seenBases.add(key); merged.push(t)
+          }
           for (let i = 0; i < Math.max(kwTracks.length, artistTracks.length); i++) {
             if (kwTracks[i])     add(kwTracks[i])
             if (artistTracks[i]) add(artistTracks[i])
@@ -445,6 +463,22 @@ function launchVisualizer(audioSource) {
     }
   }
   animate()
+
+  // Fallback: SDK player_state_changed sometimes misses auto-advance or external skips.
+  // Poll getCurrentState() every 3s — zero HTTP, local SDK read.
+  let _fallbackTrackId = null
+  setInterval(async () => {
+    const player = getPlayer()
+    if (!player) return
+    const state = await player.getCurrentState().catch(() => null)
+    if (!state) return
+    const id = state.track_window?.current_track?.id
+    if (id && id !== _fallbackTrackId) {
+      _fallbackTrackId = id
+      if (id !== _currentTrackId) sdkStateHandler(state)
+    }
+  }, 3000)
+
   return sdkStateHandler
 }
 

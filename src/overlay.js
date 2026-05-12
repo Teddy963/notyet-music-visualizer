@@ -55,6 +55,18 @@ const CONNECTOR_WORDS = new Set([
   'i','me','my','you','your','we','our','he','she','his','her','it','its',
   'they','them','their','this','that','not','no','so','if','up','go',
   'do','does','did','am',
+  // Contractions — map to same penalty tier as their base pronoun/function word
+  "i'm","i'll","i've","i'd","i've",
+  "you're","you'll","you've","you'd",
+  "we're","we'll","we've","we'd",
+  "he's","he'd","he'll",
+  "she's","she'd","she'll",
+  "it's","it'll",
+  "they're","they'll","they've","they'd",
+  "that's","what's","who's","there's","here's","where's","how's",
+  "can't","won't","don't","doesn't","didn't","isn't","aren't",
+  "wasn't","weren't","wouldn't","couldn't","shouldn't","hadn't","haven't","hasn't",
+  "let's","that'll","gonna","wanna","gotta",
   '나','너','우리','저','나를','너를','내가','네가','그가','그녀',
 ])
 
@@ -194,6 +206,10 @@ export class DataOverlay {
     this._lastMoodHue = null
     this._moodStars   = []   // [{x,y,r,g,b,depth,size,phase,driftX,driftY,born,energy}]
 
+    // Song progress → nebula expansion (0=normal, 1=full screen bloom at song end)
+    this._nebulaExpand = 0   // current (lerped)
+    this._nebulaExpandTarget = 0
+
     // World rotation + camera pan (force-directed layout)
     this._worldAngle  = 0      // slow auto-rotation (radians)
     this._camX        = 0
@@ -250,7 +266,7 @@ export class DataOverlay {
       this._worldAngle += dx * 0.006
       // Cap velocity to prevent post-drag spinning lag
       this._dragVelX = Math.max(-1.2, Math.min(1.2, dx * 0.006 * 60))
-      this._tiltAngle = Math.max(0, Math.min(0.42, this._tiltAngle + dy * 0.003))
+      this._tiltAngle = Math.max(-0.1, Math.min(0.42, this._tiltAngle + dy * 0.003))
     }
     const onUp = e => {
       if (!this._dragMoved && this._dragActive && !isUI(e)) {
@@ -297,19 +313,22 @@ export class DataOverlay {
 
     const now = Date.now()
     const makeNode = (track, idx, total, shellR, recType, revealIdx) => {
-      // Spread nodes evenly on their shell, with slight latitude variation for depth
-      const phi   = (idx / total) * Math.PI * 2 + (recType === 'artist' ? 1.1 : 0.3)
-      // Inner shell: near equator; outer shell: higher latitude spread
-      const latSpread = recType === 'artist' ? 0.9 : 0.5
-      const theta = Math.PI * 0.5 + (((idx % 3) - 1) / 2) * latSpread
+      // Lyric recs cluster around mood hue direction; artist recs offset by π
+      const moodPhi = ((track._moodHue ?? 200) / 360) * Math.PI * 2
+      const spread  = (Math.PI * 2) / Math.max(total, 1)
+      const phi     = recType === 'artist'
+        ? moodPhi + Math.PI + (idx - (total - 1) / 2) * spread * 0.6   // opposite side
+        : moodPhi + (idx - (total - 1) / 2) * spread * 0.5             // cluster around mood
+      // Spread theta top-to-bottom evenly (avoid equator-only clustering)
+      const theta   = 0.25 * Math.PI + (idx / Math.max(total - 1, 1)) * 0.5 * Math.PI
       return {
         track,
         recType,
         shellR,  // store for depth normalization
         wx: shellR * Math.sin(theta) * Math.cos(phi),
-        wy: shellR * Math.cos(theta),
+        wy: -shellR * Math.cos(theta),   // negated: match keyword node convention (north pole → top)
         wz: shellR * Math.sin(theta) * Math.sin(phi),
-        hue: (idx / total) * 360,
+        hue: track._moodHue ?? 200,  // mood-based hue, not index
         alpha: 0,
         _revealAt: now + revealIdx * 600,  // stagger 600ms apart
         sourceKeywords: track._sourceKeywords ?? [],
@@ -327,7 +346,7 @@ export class DataOverlay {
       if (lyricNodes[i])  interleaved.push(lyricNodes[i])
       if (artistNodes[i]) interleaved.push(artistNodes[i])
     }
-    interleaved.forEach((rn, i) => { rn._revealAt = now + i * 600 })
+    interleaved.forEach((rn, i) => { rn._revealAt = now + i * 2000 })
     this._recNodes = interleaved
   }
 
@@ -396,6 +415,8 @@ export class DataOverlay {
     this._lastMoodHue  = null
     this._moodColor    = false
     this._tr = 232; this._tg = 175; this._tb = 0  // back to amber baseline
+    this._nebulaExpand = 0
+    this._nebulaExpandTarget = 0
     this._subtitleCur  = ''; this._subtitlePrev = ''
     this._subtitleAlpha = 0; this._subtitlePrevAlpha = 0
     const w = this.canvas.width, h = this.canvas.height
@@ -427,6 +448,9 @@ export class DataOverlay {
         }
       }
       for (const t of tokenize(line.words)) {
+        // ATTACH_WORDS (the, a, in, of…) excluded from keyword nodes entirely
+        // They'll still appear as lyricOnly nodes below
+        if (ATTACH_WORDS.has(t) || KO_ATTACH_WORDS.has(t)) continue
         if (!seen.has(t)) { freq[t] = (freq[t] || 0) + 1; seen.add(t) }
       }
     }
@@ -479,7 +503,8 @@ export class DataOverlay {
         } else {
           word = raw.replace(/[^a-zA-Z']/g, '').toLowerCase()
           if (word.length < 2) continue
-          if (STOPWORDS.has(word) || ATTACH_WORDS.has(word) || CONNECTOR_WORDS.has(word)) continue
+          if (STOPWORDS.has(word) || CONNECTOR_WORDS.has(word)) continue
+          // ATTACH_WORDS allowed as lyricOnly (diamond, not keyword sphere node)
         }
         if (keywordSet.has(word)) continue  // already a keyword node
         if (!seenInLine.has(word)) {
@@ -489,6 +514,7 @@ export class DataOverlay {
       }
     }
     const MAX_LYRIC_NODES = 120  // all non-keyword words; invisible when dormant so no visual clutter
+    const totalLines = lines.length || 1
     const lyricOnlyWords = Object.entries(lyricOnlyFreq)
       .sort((a, b) => b[1] - a[1])
       .slice(0, MAX_LYRIC_NODES)
@@ -498,13 +524,19 @@ export class DataOverlay {
       const isKo = /[가-힣]/.test(word)
       const surface = isKo ? (lyricOnlyForms[word] ?? word) : word.toUpperCase()
       const forms = surfaceForms[word]
+      // Frequency ratio — how many lines this word appears in (0→1)
+      // ATTACH_WORDS that appear in >40% of lines get visual emphasis
+      const freqRatio = lyricOnlyFreq[word] / totalLines
+      const isFreqAttach = (ATTACH_WORDS.has(word) || KO_ATTACH_WORDS.has(word)) && freqRatio >= 0.40
       return {
         word, parts: [word], display: surface,
         _koForms: forms?.length > 1 ? new Set(forms) : null,
         isLyricOnly: true,
+        _freqRatio: freqRatio,
+        _isFreqAttach: isFreqAttach,  // high-frequency attach word → enhanced diamond
         x: 0, y: 0,
         type: 'lyric',
-        size: 4,
+        size: isFreqAttach ? 7 : 4,   // slightly larger base size for frequent attach words
         rot: 0, freq: lyricOnlyFreq[word],
         isCore: false, isTitle: false, isConnector: false, isAttach: false,
         state: 'dormant', alpha: 0, activeTimer: 0,
@@ -655,6 +687,12 @@ export class DataOverlay {
       this._subtitleCur       = text || ''
       this._subtitleAlpha     = text ? 0 : 1  // clear instantly; new text fades in
     }
+  }
+
+  // t ∈ [0, 1]: song playback progress. Triggers nebula bloom in final ~20%
+  setSongProgress(t) {
+    // Expand starts at 80%, reaches full at 100%
+    this._nebulaExpandTarget = t < 0.80 ? 0 : Math.min(1, (t - 0.80) / 0.20)
   }
 
   setLoadingHint(active) { this._loadingHint = active }
@@ -827,9 +865,10 @@ export class DataOverlay {
     // Boost: song title words ×3.0 (always pull toward center)
     const titleWords = this._titleWords ?? new Set()
     const _effFreq = n => {
-      if (KO_ATTACH_WORDS.has(n.word)) return n.freq * 0.20
-      if (/^[가-힣]$/.test(n.word)) return n.freq * 0.15
-      if (CONNECTOR_WORDS.has(n.word) || ATTACH_WORDS.has(n.word)) return n.freq * 0.20
+      if (KO_ATTACH_WORDS.has(n.word)) return n.freq * 0.04
+      if (/^[가-힣]$/.test(n.word)) return n.freq * 0.10
+      if (ATTACH_WORDS.has(n.word)) return n.freq * 0.04   // articles/prepositions: near-invisible rank
+      if (CONNECTOR_WORDS.has(n.word)) return n.freq * 0.06  // pronouns/contractions: always outer
       if (titleWords.has(n.word)) return n.freq * 3.0
       return n.freq
     }
@@ -855,7 +894,7 @@ export class DataOverlay {
     this._sphereR = SR
     nodes.forEach(n => {
       const t     = n._ring / maxRing          // 0 = center, 1 = outer
-      const theta = t * Math.PI * 0.85         // polar angle (0 = pole/center, π*0.85 ≈ equator)
+      const theta = t * Math.PI * 0.82        // max ~148° — full sphere coverage, south pole slightly reserved
       // Golden-angle azimuth within ring, offset per ring for organic spacing
       const phi   = (n._ringIdx / Math.max(1, n._ringCap)) * Math.PI * 2
                     + n._ring * 2.399          // 2.399 ≈ golden angle (radians)
@@ -869,7 +908,7 @@ export class DataOverlay {
         n.wx = 0; n.wy = 0; n.wz = 0
       } else {
         n.wx = SR * Math.sin(theta + jt) * Math.cos(phi + jp)
-        n.wy = SR * Math.cos(theta + jt)
+        n.wy = -SR * Math.cos(theta + jt)   // negate: north pole → top of screen
         n.wz = SR * Math.sin(theta + jt) * Math.sin(phi + jp)
       }
 
@@ -1046,7 +1085,7 @@ export class DataOverlay {
         this._cascadeCd = 3.0
       }
     }
-    this._beatFlash  *= Math.pow(0.80, delta * 60)
+    this._beatFlash  *= Math.pow(0.94, delta * 60)   // ~200ms half-life for smooth fade
     this._edgeGlitch *= Math.pow(0.55, delta * 60)  // fast decay: gone in ~3-4 frames
 
     // B: Edge signal pulses — slower rate
@@ -1070,8 +1109,9 @@ export class DataOverlay {
       }
     }
 
-    // Map reveal
-    const targetReveal = this._mapPinned ? 1.0 : 0
+    // Map reveal — pinned OR beat flash (strong beats briefly show all nodes)
+    const beatReveal   = this._beatFlash * 0.6   // max 0.6 reveal on strong beat
+    const targetReveal = this._mapPinned ? 1.0 : beatReveal
     this._mapReveal += ((targetReveal - this._mapReveal) * Math.min(1, delta * 4))
     const revealMult = 1 + this._mapReveal * 8
 
@@ -1100,15 +1140,15 @@ export class DataOverlay {
           while (da < -Math.PI) da += Math.PI * 2
           // Gentle lerp — only when inertia is negligible
           const focusStrength = Math.max(0, 1 - velMag / 0.008)
-          this._worldAngle += da * Math.min(1, delta * 0.35 * focusStrength)
+          this._worldAngle += da * Math.min(1, delta * 0.12 * focusStrength)
 
           // Auto-tilt: rotate X axis so active node centroid lands near vertical center
           const activeForTilt = this._nodes.filter(n => n.state === 'active' && n.wx != null && (n._ring ?? 99) > 0)
           if (activeForTilt.length > 0) {
             const avgWY = activeForTilt.reduce((sum, n) => sum + n.wy, 0) / activeForTilt.length
             const tiltTarget = Math.atan2(avgWY, this._sphereR || 220)
-            const clampedTilt = Math.max(0, Math.min(0.42, tiltTarget))
-            this._tiltAngle += (clampedTilt - this._tiltAngle) * Math.min(1, delta * 0.25 * focusStrength)
+            const clampedTilt = Math.max(-0.08, Math.min(0.42, tiltTarget))
+            this._tiltAngle += (clampedTilt - this._tiltAngle) * Math.min(1, delta * 0.10 * focusStrength)
           }
         } else if (!focusNode) {
           // No active node — slow drift
@@ -1120,7 +1160,7 @@ export class DataOverlay {
 
       const TILT  = this._tiltAngle ?? 0.28    // user-controlled X-axis tilt
       const rawR  = this._sphereR || 220
-      const SR    = Math.min(w, h) * 0.38      // sphere radius in screen units
+      const SR    = Math.min(w, h) * 0.35      // sphere radius in screen units
       const s     = SR / rawR                  // world→screen scale
       const FOCAL = SR * 2.4                   // camera Z distance (perspective strength)
 
@@ -1168,7 +1208,6 @@ export class DataOverlay {
         rn.x = w * 0.5 + rx0 * p
         rn.y = h * 0.5 + ry  * p
         rn._depth = (rz + (rn.shellR || SR * 1.35)) / (2 * (rn.shellR || SR * 1.35))
-        rn.alpha  = Math.min(1, rn.alpha + delta * 0.8)  // fade in
       }
     }
 
@@ -1178,6 +1217,82 @@ export class DataOverlay {
 
     // ── Blueprint grid — pre-baked offscreen, single drawImage per frame ──
     if (this._gridCanvas) ctx.drawImage(this._gridCanvas, 0, 0)
+
+    // ── Mood nebula — background space glow, drawn first so sphere sits in front ──
+    // Lerp nebula expansion toward target (song-end bloom)
+    this._nebulaExpand += (this._nebulaExpandTarget - this._nebulaExpand) * Math.min(1, delta * 0.8)
+    const expand = this._nebulaExpand  // 0 = normal, 1 = full bloom
+
+    if (this._moodStars.length > 0) {
+      if (!this._nebulaCanvas) {
+        this._nebulaCanvas = document.createElement('canvas')
+        this._nebulaCanvas.width  = w
+        this._nebulaCanvas.height = h
+      } else if (this._nebulaCanvas.width !== w || this._nebulaCanvas.height !== h) {
+        this._nebulaCanvas.width  = w
+        this._nebulaCanvas.height = h
+      }
+      const nc = this._nebulaCanvas.getContext('2d')
+      nc.clearRect(0, 0, w, h)
+
+      for (const s of this._moodStars) {
+        s.born = Math.min(1, s.born + delta * 0.5)
+        s.x += s.driftX * delta * 0.008
+        s.y += s.driftY * delta * 0.008
+        const breathe  = 0.75 + 0.25 * Math.sin(this.time * s.speed * 0.4 + s.phase)
+        // Song-end bloom: patches grow larger and brighter
+        const aMult    = 1 + expand * 3.5
+        const rMult    = 1 + expand * 2.2
+        const a        = Math.min(0.55, (0.05 + s.depth * 0.07) * s.born * aMult)
+        const patchR   = (120 + s.depth * 280) * rMult
+        const grd = nc.createRadialGradient(s.x, s.y, 0, s.x, s.y, patchR)
+        grd.addColorStop(0,    `rgba(${s.r},${s.g},${s.b},${a * breathe})`)
+        grd.addColorStop(0.4,  `rgba(${s.r},${s.g},${s.b},${a * 0.3 * breathe})`)
+        grd.addColorStop(1,    `rgba(${s.r},${s.g},${s.b},0)`)
+        nc.beginPath(); nc.arc(s.x, s.y, patchR, 0, Math.PI * 2)
+        nc.fillStyle = grd; nc.fill()
+      }
+
+      // Song-end: add large corner/edge nebula patches for full-screen depth
+      if (expand > 0.05 && this._moodStars.length > 0) {
+        // Pick dominant color from latest stars
+        const recent = this._moodStars.slice(-3)
+        const dr = Math.round(recent.reduce((s, x) => s + x.r, 0) / recent.length)
+        const dg = Math.round(recent.reduce((s, x) => s + x.g, 0) / recent.length)
+        const db = Math.round(recent.reduce((s, x) => s + x.b, 0) / recent.length)
+        const corners = [
+          [w * 0.15, h * 0.15], [w * 0.85, h * 0.15],
+          [w * 0.10, h * 0.85], [w * 0.90, h * 0.85],
+          [w * 0.50, h * 0.05], [w * 0.05, h * 0.50], [w * 0.95, h * 0.50],
+        ]
+        for (const [cx, cy] of corners) {
+          const cR  = (280 + Math.sin(this.time * 0.3 + cx) * 60) * expand
+          const cA  = expand * 0.10 * (0.7 + 0.3 * Math.sin(this.time * 0.2 + cy * 0.01))
+          const grd = nc.createRadialGradient(cx, cy, 0, cx, cy, cR)
+          grd.addColorStop(0,   `rgba(${dr},${dg},${db},${cA})`)
+          grd.addColorStop(0.5, `rgba(${dr},${dg},${db},${cA * 0.3})`)
+          grd.addColorStop(1,   `rgba(${dr},${dg},${db},0)`)
+          nc.beginPath(); nc.arc(cx, cy, cR, 0, Math.PI * 2)
+          nc.fillStyle = grd; nc.fill()
+        }
+      }
+
+      // Blur more as song ends for deeper space feel
+      const blurPx = 40 + expand * 35
+      ctx.save()
+      ctx.filter = `blur(${blurPx}px)`
+      ctx.drawImage(this._nebulaCanvas, 0, 0)
+      ctx.filter = 'none'
+      ctx.restore()
+
+      // Tiny star spark — brighter at song end
+      for (const s of this._moodStars) {
+        const sparkA = (0.15 + s.depth * 0.25 + expand * 0.25) * s.born * (0.6 + 0.4 * Math.sin(this.time * s.speed * 2 + s.phase))
+        ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(0.5, s.depth * (1.5 + expand * 2)), 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${s.r},${s.g},${s.b},${Math.min(0.9, sparkA)})`
+        ctx.fill()
+      }
+    }
 
     // ── Horizontal scan line ─────────────────────────────────────────────
     const scanY = ((this.time * 0.09) % 1.05) * h
@@ -1346,7 +1461,7 @@ export class DataOverlay {
         let prev = null
         for (let i = 0; i <= STEPS; i++) {
           const phi = (i / STEPS) * Math.PI * 2
-          const pt = projWF(SR * rLat * Math.cos(phi), SR * yLat, SR * rLat * Math.sin(phi))
+          const pt = projWF(SR * rLat * Math.cos(phi), -SR * yLat, SR * rLat * Math.sin(phi))
           if (prev && pt.depth > 0.05 && prev.depth > 0.05) {
             ctx.strokeStyle = `rgba(${cr},${cg},${cb},${WF_BASE * pt.depth})`
             ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(pt.x, pt.y); ctx.stroke()
@@ -1368,7 +1483,7 @@ export class DataOverlay {
           const theta = (si / STEPS_LON) * Math.PI
           pts.push(projWF(
             SR * Math.sin(theta) * Math.cos(phi),
-            SR * Math.cos(theta),
+            -SR * Math.cos(theta),   // negated: match keyword node convention
             SR * Math.sin(theta) * Math.sin(phi)
           ))
         }
@@ -1430,12 +1545,12 @@ export class DataOverlay {
         if (n.isLyricOnly) {
           n.alpha = Math.max(0, n.alpha - delta * 3)
         } else {
-          // Beat-only flicker: invisible base, flash on beat
-          // Inner rings flash brighter, outer rings barely visible
-          const ringDepth  = 1 - Math.min(1, (n._ring ?? 5) / 5)   // 1=center, 0=outer
-          const beatTarget = this._beatFlash * (0.08 + ringDepth * 0.22)
-          // Fast attack on beat, slower fade to dark
-          const rate = beatTarget > n.alpha ? delta * 18 : delta * 3
+          // Beat-only flicker — per-node phase offset so nodes don't all flash simultaneously
+          const ringDepth  = 1 - Math.min(1, (n._ring ?? 5) / 5)
+          const phase      = (n._nodeIdx ?? 0) * 0.37  // irrational offset → organic stagger
+          const phaseFlash = Math.max(0, this._beatFlash - (phase % 0.25) * 0.4)  // slight delay per node
+          const beatTarget = phaseFlash * (0.10 + ringDepth * 0.20)
+          const rate = beatTarget > n.alpha ? delta * 18 : delta * 5
           n.alpha = Math.max(0, Math.min(0.32, n.alpha + (beatTarget - n.alpha) * Math.min(1, rate)))
         }
       } else if (n.state === 'active') {
@@ -1443,9 +1558,8 @@ export class DataOverlay {
       } else if (n.state === 'neighbor') {
         n.alpha = Math.min(0.35, n.alpha + delta * 3)
       } else if (n.state === 'fading') {
-        const floor = 0.04 + (n.size / 80) * 0.03
-        n.alpha = Math.max(floor, n.alpha - delta * 1.0)
-        if (n.alpha <= 0.07) n.state = 'dormant'
+        n.alpha = Math.max(0, n.alpha - delta * 1.0)
+        if (n.alpha <= 0.01) { n.alpha = 0; n.state = 'dormant' }
       }
 
       const beatBoost = n.state === 'active' ? this._beatFlash * 0.35 : 0
@@ -1454,7 +1568,7 @@ export class DataOverlay {
       const isActive  = n.state === 'active'
       const isHub     = (n._ring ?? 99) <= 1   // ring 0,1 = hub nodes
       const a = Math.min(1, (n.alpha + beatBoost) * projAlpha)
-      const showLabel = isActive || (isHub && a > 0.25) || ((n._ring ?? 99) <= 2 && a > 0.4) || (this._mapPinned && n.display)
+      const showLabel = n._ring === 0 || isActive || (isHub && a > 0.25) || ((n._ring ?? 99) <= 2 && a > 0.4) || ((this._mapPinned || this._mapReveal > 0.35) && n.display)
 
       // Perspective-scaled draw size — hubs large, leaves tiny
       const drawSize = Math.max(1.5, n.size * projScale)
@@ -1467,28 +1581,39 @@ export class DataOverlay {
       if (n.isLyricOnly) {
         if (a < 0.02) continue
         if (isActive) {
-          // Small diamond ◇ with mood color
-          ctx.shadowBlur  = 6 + this._beatFlash * 8
-          ctx.shadowColor = `rgba(${acr},${acg},${acb},0.7)`
-          const d = Math.max(3, drawSize * 0.45)
-          ctx.lineWidth   = 1.0
-          ctx.strokeStyle = `rgba(${acr},${acg},${acb},${a})`
+          // High-frequency attach words (the, a, 의…) get larger, brighter diamond
+          const freqBoost = n._isFreqAttach ? (0.4 + (n._freqRatio ?? 0) * 0.8) : 0
+          const d = Math.max(6, drawSize * 0.6) * (1 + freqBoost * 0.7)
+          const glowAmt = n._isFreqAttach
+            ? 14 + freqBoost * 10 + this._beatFlash * 16
+            : 8 + this._beatFlash * 12
+          ctx.shadowBlur  = glowAmt
+          ctx.shadowColor = `rgba(${acr},${acg},${acb},${n._isFreqAttach ? 0.95 : 0.8})`
+          ctx.lineWidth   = n._isFreqAttach ? 1.6 : 1.2
+          ctx.strokeStyle = `rgba(${acr},${acg},${acb},${Math.min(1, a * (n._isFreqAttach ? 1.3 : 1))})`
           ctx.beginPath()
           ctx.moveTo(n.x, n.y - d); ctx.lineTo(n.x + d, n.y)
           ctx.lineTo(n.x, n.y + d); ctx.lineTo(n.x - d, n.y)
           ctx.closePath(); ctx.stroke()
+          // Center dot — larger for freq attach
+          const dotR = n._isFreqAttach ? Math.max(2, d * 0.22) : Math.max(1.5, d * 0.18)
+          ctx.fillStyle = `rgba(${acr},${acg},${acb},${a * (n._isFreqAttach ? 0.9 : 0.7)})`
+          ctx.beginPath(); ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2); ctx.fill()
           ctx.shadowBlur = 0
         } else {
-          // Fading: just a tiny dot
+          // Fading: tiny dot
           ctx.beginPath(); ctx.arc(n.x, n.y, Math.max(1, r3 * 0.35), 0, Math.PI * 2)
           ctx.fillStyle = `rgba(${acr},${acg},${acb},${a * 0.6})`; ctx.fill()
         }
-        // Label when active
+        // Label when active — freq attach words get label too
         if (isActive && n.display) {
-          ctx.font      = `300 9px 'Courier New', monospace`
+          const fz = n._isFreqAttach ? 11 : 10
+          ctx.font      = `${n._isFreqAttach ? 600 : 400} ${fz}px 'Space Mono', 'Noto Sans KR', sans-serif`
           ctx.textAlign = 'center'
-          ctx.fillStyle = `rgba(${acr},${acg},${acb},${a * 0.75})`
-          ctx.fillText(n.display, n.x, n.y - Math.max(3, drawSize * 0.45) - 4)
+          ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 5
+          ctx.fillStyle = `rgba(${acr},${acg},${acb},${Math.min(1, a * (n._isFreqAttach ? 1.1 : 0.85))})`
+          ctx.fillText(n.display, n.x, n.y - Math.max(6, drawSize * 0.6) * (1 + (n._isFreqAttach ? 0.7 : 0) * 0.7) - 5)
+          ctx.shadowBlur = 0
         }
         continue
       }
@@ -1531,9 +1656,18 @@ export class DataOverlay {
 
       } else {
         // Dormant: shape by ring — Pioneer plaque style
+        // Pioneer plaque forms: always faintly visible by ring depth, beat amplifies
+        const ring = n._ring ?? 99
         ctx.shadowBlur = 0
-        const depthFactor  = 0.12 + projAlpha * 0.88
-        const ring         = n._ring ?? 99
+        // Baseline alpha by ring: center most visible, outer rings barely visible
+        // This preserves the △/× shape diversity even without beat
+        const ringBase = ring === 0 ? 0.14
+                       : ring <= 2 ? 0.07
+                       : ring <= 4 ? 0.045
+                       : 0.025
+        const baseAlpha    = ringBase * projAlpha
+        const depthFactor  = Math.max(baseAlpha, a * (0.12 + projAlpha * 0.88))
+        if (depthFactor < 0.008) continue
         const outlineAlpha = depthFactor * (isHub ? 0.90 : isMid ? 0.75 : 0.58)
         const dotAlpha     = depthFactor * (isHub ? 1.0  : isMid ? 0.82 : 0.65)
         ctx.strokeStyle    = `rgba(${dcr},${dcg},${dcb},${outlineAlpha})`
@@ -1580,7 +1714,7 @@ export class DataOverlay {
 
       // All node types: same circle rendering — box type no longer used
       if (showLabel) {
-        if (isActive) {
+        if (isActive || n._ring === 0) {
             // Crosshair tick marks (short, outside ring)
             const ch = outerR + 5
             const ct = 4  // tick length
@@ -1596,7 +1730,7 @@ export class DataOverlay {
             ctx.globalAlpha = 1
 
             const goRight = n.x < w * 0.58
-            const fz  = Math.max(8, 10 + Math.round(drawSize / 18))
+            const fz  = Math.max(10, 11 + Math.round(drawSize / 16))
             const dir = goRight ? 1 : -1
             const diagLen = 12 + drawSize * 0.3
             const horzLen = 28 + drawSize * 0.6
@@ -1604,7 +1738,9 @@ export class DataOverlay {
             const midX    = startX + dir * diagLen
             const midY    = n.y - 10
             const endX    = midX + dir * horzLen
-            ctx.lineWidth = 1.2; ctx.strokeStyle = `rgba(${acr},${acg},${acb},${a * 0.70})`
+            // Ring 0 (nucleus) always readable; active labels always readable even when back-facing
+            const labelA = n._ring === 0 ? Math.max(0.30, a) : Math.max(0.55, a)
+            ctx.lineWidth = 1.2; ctx.strokeStyle = `rgba(${acr},${acg},${acb},${labelA * 0.70})`
             ctx.beginPath()
             ctx.moveTo(startX, n.y)
             ctx.lineTo(midX, midY)
@@ -1614,13 +1750,16 @@ export class DataOverlay {
             ctx.moveTo(endX, midY - 3)
             ctx.lineTo(endX, midY + 3)
             ctx.stroke()
-            ctx.font = `700 ${fz}px 'Space Mono', 'Noto Sans KR', monospace`
-            ctx.fillStyle = `rgba(${acr},${acg},${acb},${a})`
+            ctx.font = `700 ${fz}px 'Space Mono', 'Noto Sans KR', sans-serif`
+            ctx.shadowColor = 'rgba(0,0,0,0.85)'
+            ctx.shadowBlur  = 6
+            ctx.fillStyle = `rgba(${acr},${acg},${acb},${Math.min(1, labelA * 1.3)})`
             ctx.textAlign = goRight ? 'left' : 'right'
             ctx.fillText((n.display ?? n.word).toUpperCase(), endX + dir * 6, midY + fz * 0.36)
+            ctx.shadowBlur = 0
           } else {
             // ATC waypoint style — code right of symbol, vertically centered
-            ctx.font = `400 9px 'Space Mono', 'Noto Sans KR', monospace`
+            ctx.font = `400 9px 'Space Mono', 'Noto Sans KR', sans-serif`
             ctx.fillStyle = `rgba(${dcr},${dcg},${dcb},${a * 0.88})`
             ctx.textAlign = 'left'
             ctx.fillText((n.display ?? n.word).toUpperCase(), n.x + outerR + 3, n.y + 2.5)
@@ -1819,61 +1958,13 @@ export class DataOverlay {
     }
     ctx.restore()
 
-    // ── Mood nebula — large atmospheric color clouds that dye the space ────────
-    // Draw all nebula patches to offscreen, blur once, composite — avoids per-star blur overhead
-    if (this._moodStars.length > 0) {
-      // Lazy-init nebula offscreen canvas
-      if (!this._nebulaCanvas) {
-        this._nebulaCanvas = document.createElement('canvas')
-        this._nebulaCanvas.width  = w
-        this._nebulaCanvas.height = h
-      } else if (this._nebulaCanvas.width !== w || this._nebulaCanvas.height !== h) {
-        this._nebulaCanvas.width  = w
-        this._nebulaCanvas.height = h
-      }
-      const nc = this._nebulaCanvas.getContext('2d')
-      nc.clearRect(0, 0, w, h)
-
-      for (const s of this._moodStars) {
-        s.born = Math.min(1, s.born + delta * 0.5)   // ~2s fade-in
-        s.x += s.driftX * delta * 0.008              // near-imperceptible drift
-        s.y += s.driftY * delta * 0.008
-
-        // Breathe: slow pulse tied to song time
-        const breathe = 0.75 + 0.25 * Math.sin(this.time * s.speed * 0.4 + s.phase)
-        const a = 0.06 + s.depth * 0.07              // 0.06–0.13: subtle, won't dominate
-        const patchR = 60 + s.depth * 120            // 60–180px patch radius
-
-        const grd = nc.createRadialGradient(s.x, s.y, 0, s.x, s.y, patchR)
-        grd.addColorStop(0,    `rgba(${s.r},${s.g},${s.b},${a * breathe * s.born})`)
-        grd.addColorStop(0.45, `rgba(${s.r},${s.g},${s.b},${a * 0.35 * breathe * s.born})`)
-        grd.addColorStop(1,    `rgba(${s.r},${s.g},${s.b},0)`)
-        nc.beginPath(); nc.arc(s.x, s.y, patchR, 0, Math.PI * 2)
-        nc.fillStyle = grd; nc.fill()
-      }
-
-      // Blur the whole nebula layer once — creates soft cloud-like diffusion
-      ctx.save()
-      ctx.filter = 'blur(28px)'
-      ctx.drawImage(this._nebulaCanvas, 0, 0)
-      ctx.filter = 'none'
-      ctx.restore()
-
-      // Tiny bright spark at each nebula center — subtle star presence, not an icon
-      for (const s of this._moodStars) {
-        const sparkA = (0.3 + s.depth * 0.4) * s.born * (0.7 + 0.3 * Math.sin(this.time * s.speed * 2 + s.phase))
-        ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(0.8, s.depth * 2), 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(${s.r},${s.g},${s.b},${sparkA})`
-        ctx.fill()
-      }
-    }
 
     // ── Recommendation nodes — outer shell, always visible ───────────────
     const nowMs = Date.now()
     for (const rn of this._recNodes) {
       if (rn.x == null) continue
       if (nowMs < rn._revealAt) continue  // staggered reveal — not yet
-      rn.alpha = Math.min(0.92, rn.alpha + delta * 0.6)
+      rn.alpha = Math.min(0.92, rn.alpha + delta * 0.25)
       const depth = rn._depth ?? 0.5
       const a     = rn.alpha * (depth * 0.7 + 0.3)
       const H     = rn.hue
@@ -1935,17 +2026,17 @@ export class DataOverlay {
       const goRight = rn.x < w * 0.6
       const lx   = goRight ? rn.x + R + 8 : rn.x - R - 8
       const aLabel = Math.max(0.45, a * (hovered ? 1.0 : 0.88))
-      ctx.font      = `400 ${fz}px 'Courier New', monospace`
+      ctx.font      = `400 ${fz}px 'Space Mono', monospace`
       ctx.textAlign = goRight ? 'left' : 'right'
       ctx.fillStyle = `hsla(${H},80%,78%,${aLabel})`
       ctx.fillText(rn.label, lx, rn.y - 2)
       ctx.fillStyle = `hsla(${H},60%,62%,${Math.max(0.35, a * (hovered ? 0.85 : 0.65))})`
-      ctx.font      = `300 9px 'Courier New', monospace`
+      ctx.font      = `300 9px 'Space Mono', monospace`
       ctx.fillText(rn.artist, lx, rn.y + 11)
 
       // Click hint on hover
       if (hovered) {
-        ctx.font      = `300 8px 'Courier New', monospace`
+        ctx.font      = `300 8px 'Space Mono', monospace`
         ctx.fillStyle = `hsla(${H},70%,70%,${a * 0.7})`
         ctx.fillText('▶ PLAY', lx, rn.y + 23)
       }
@@ -1994,7 +2085,7 @@ export class DataOverlay {
     const edgeN  = this._edges.length
     const actN   = this._nodes.filter(n => n.state === 'active').length
 
-    ctx.font = `400 9px 'Space Mono', 'Courier New', monospace`
+    ctx.font = `400 9px 'Space Mono', 'Space Mono', monospace`
 
     // Top-left data block
     ctx.fillStyle = `rgba(${cr},${cg},${cb},${hA})`
@@ -2020,25 +2111,25 @@ export class DataOverlay {
     ctx.fillText(code, cx, h - pad - 4)
 
     // Top-center: current lyric line — crossfade between prev and current
-    const FADE_SPEED = 3.5  // alpha units per second
+    const FADE_SPEED = 6.0  // faster fade-in so short lines still visible
     this._subtitleAlpha     = Math.min(1, (this._subtitleAlpha     || 0) + delta * FADE_SPEED)
     this._subtitlePrevAlpha = Math.max(0, (this._subtitlePrevAlpha || 0) - delta * FADE_SPEED)
-    ctx.font = `300 15px 'Noto Sans KR', 'Space Mono', monospace`
+    ctx.font = `400 13px 'Space Mono', 'Noto Sans KR', sans-serif`
     ctx.textAlign   = 'center'
-    ctx.shadowColor = 'rgba(0,0,0,0.9)'
-    ctx.shadowBlur  = 10
+    ctx.shadowColor = 'rgba(0,0,0,0.95)'
+    ctx.shadowBlur  = 8
     if (this._subtitlePrev && this._subtitlePrevAlpha > 0) {
-      ctx.fillStyle = `rgba(${acr},${acg},${acb},${this._subtitlePrevAlpha * 0.75})`
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${this._subtitlePrevAlpha * 0.90})`
       ctx.fillText(this._subtitlePrev, cx, pad + 38)
     }
     if (this._subtitleCur) {
-      ctx.fillStyle = `rgba(${acr},${acg},${acb},${this._subtitleAlpha * (0.75 + this._beatFlash * 0.2)})`
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${this._subtitleAlpha * (0.90 + this._beatFlash * 0.1)})`
       ctx.fillText(this._subtitleCur, cx, pad + 40)
     } else if (this._loadingHint) {
       // Blinking dots while lyrics load
       const blink = Math.floor(this.time * 2) % 3 + 1
       ctx.fillStyle = `rgba(${cr},${cg},${cb},0.35)`
-      ctx.font = `300 11px 'Courier New', monospace`
+      ctx.font = `300 11px 'Space Mono', monospace`
       ctx.fillText('ACQUIRING LYRICS' + '.'.repeat(blink), cx, pad + 40)
     }
     ctx.shadowBlur = 0
