@@ -1,5 +1,5 @@
 import './style.css'
-import { login, handleCallback, isLoggedIn, startPolling, initPlayer, transferPlayback, getLyrics, getPlaybackState, skipToNext, skipToPrevious, getRecommendations, playTrack } from './spotify.js'
+import { login, handleCallback, isLoggedIn, logout, validateToken, startPolling, initPlayer, transferPlayback, getPlayer, skipToNext, skipToPrevious, togglePlay, saveTrack, unsaveTrack, isTrackSaved, getRecommendations, playTrack, getLyrics } from './spotify.js'
 import { analyzeLyrics } from './moodAnalyzer.js'
 import { AudioSync } from './audioSync.js'
 import { Visualizer } from './visualizer.js'
@@ -21,10 +21,12 @@ loginScreen.id = 'login-screen'
 const nowPlaying = el('div', 'now-playing', `
   <div class="track-row">
     <button class="skip-btn" id="skip-prev" title="Previous (←)">&#8249;</button>
+    <button class="skip-btn" id="pause-btn" title="Play / Pause (Space)">⏸</button>
     <div class="track-info">
       <div class="track"></div>
       <div class="artist"></div>
     </div>
+    <button class="skip-btn like-btn" id="like-btn" title="Save to Spotify">♡</button>
     <button class="skip-btn" id="skip-next" title="Next (→)">&#8250;</button>
   </div>
 `)
@@ -140,6 +142,9 @@ async function boot() {
     if (!ok) { showLogin(); return }
   }
   if (!isLoggedIn()) { showLogin(); return }
+  // Validate token before entering Spotify mode
+  const valid = await validateToken()
+  if (!valid) { logout(); showLogin(); return }
   startSpotifyMode()
 }
 
@@ -155,9 +160,18 @@ async function startSpotifyMode() {
   app.appendChild(statusEl)
 
   try {
+    let transferred = false
+    let gotState = false
     await initPlayer(
-      async (deviceId) => { await transferPlayback(deviceId) },
-      () => {},
+      async (deviceId) => {
+        if (transferred) return
+        transferred = true
+        // Wait to see if SDK receives playback state on its own (already active device)
+        setTimeout(async () => {
+          if (!gotState) await transferPlayback(deviceId)
+        }, 2500)
+      },
+      (state) => { if (state) gotState = true },
       (err) => {
         statusEl.querySelector('p').textContent = `Error: ${err}`
       }
@@ -166,10 +180,17 @@ async function startSpotifyMode() {
     statusEl.remove()
     const audioSync = new AudioSync()
     audioSync.start()
-    launchVisualizer(audioSync)
+    const sdkHandler = launchVisualizer(audioSync)
+    // Attach SDK state handler to player — zero HTTP, event-driven
+    const player = getPlayer()
+    if (player && sdkHandler) player.addListener('player_state_changed', sdkHandler)
 
   } catch (e) {
-    if (app.contains(statusEl)) statusEl.querySelector('p').textContent = `Failed: ${e.message}`
+    if (app.contains(statusEl)) {
+      statusEl.querySelector('p').textContent = `Failed: ${e.message} — press ESC to reconnect`
+    }
+    // Token likely invalid — clear and show login after 3s
+    setTimeout(() => { logout(); location.reload() }, 3000)
   }
 }
 
@@ -199,20 +220,24 @@ function _findCurrentLine(posMs) {
 }
 
 function _startPositionPolling(onPause) {
+  // Uses SDK getCurrentState() — local read, zero HTTP requests
   async function poll() {
     try {
-      const state = await getPlaybackState()
-      if (state?.progress_ms != null) {
-        _lyricsPos   = state.progress_ms
+      const player = getPlayer()
+      if (!player) return
+      const state = await player.getCurrentState()
+      if (state) {
+        _lyricsPos   = state.position
         _lyricsFetch = performance.now()
-        const playing = !!state.is_playing
+        const playing = !state.paused
         if (!playing && _lastLine) onPause?.()
         _lyricsActive = playing && !!_lyrics?.length
+        _updatePauseIcon(state.paused)
       }
     } catch {}
   }
   poll()
-  setInterval(poll, 1000)
+  setInterval(poll, 1000)  // 1s is fine — no HTTP cost
 }
 
 // Detect word repetition in a lyric line → 0 (no repeat) to 1 (all same word)
@@ -242,15 +267,38 @@ function launchVisualizer(audioSource) {
   document.getElementById('skip-prev').addEventListener('click', skipToPrevious)
   document.getElementById('skip-next').addEventListener('click', skipToNext)
 
+  // Pause/play toggle
+  const pauseBtn = document.getElementById('pause-btn')
+  pauseBtn.addEventListener('click', () => togglePlay())
+  // Sync pause button icon with playback state
+  function _updatePauseIcon(paused) {
+    pauseBtn.textContent = paused ? '⏵' : '⏸'
+  }
+
+  // Like button
+  let _likedTrackId = null
+  const likeBtn = document.getElementById('like-btn')
+  likeBtn.addEventListener('click', async () => {
+    if (!_likedTrackId) return
+    const isLiked = likeBtn.classList.contains('liked')
+    if (isLiked) {
+      await unsaveTrack(_likedTrackId)
+      likeBtn.classList.remove('liked')
+      likeBtn.textContent = '♡'
+    } else {
+      await saveTrack(_likedTrackId)
+      likeBtn.classList.add('liked')
+      likeBtn.textContent = '♥'
+    }
+  })
+
   _startPositionPolling(() => {
-    overlay.setSubtitle('')
-    figureRenderer.setActiveLine('')
-    _lastLine = ''
+    // Paused — keep subtitle visible, just stop lyrics sync
   })
 
   let _currentTrackId = null
 
-  startPolling(async (track, features, analysis) => {
+  const sdkStateHandler = startPolling(async (track, features, analysis) => {
     const trackId = track.id ?? track.name
     _currentTrackId = trackId
 
@@ -260,6 +308,16 @@ function launchVisualizer(audioSource) {
 
     nowPlaying.querySelector('.track').textContent  = track.name
     nowPlaying.querySelector('.artist').textContent = track.artists.map(a => a.name).join(', ')
+
+    // Like button state
+    _likedTrackId = track.id
+    likeBtn.classList.remove('liked')
+    likeBtn.textContent = '♡'
+    isTrackSaved(track.id).then(saved => {
+      if (_likedTrackId !== track.id) return
+      likeBtn.classList.toggle('liked', saved)
+      likeBtn.textContent = saved ? '♥' : '♡'
+    }).catch(() => {})
 
     // Clear previous song state immediately
     _lyrics = null
@@ -272,6 +330,7 @@ function launchVisualizer(audioSource) {
     overlay.setRecommendations([])
     overlay.clearAccumRings()
     overlay.setTrack(track.name)
+    overlay.setLoadingHint(true)
     figureRenderer.setActiveLine('')
     figureRenderer.setWords([])
     figureRenderer.setAlbumArt(track.album?.images?.[0]?.url ?? null)
@@ -281,6 +340,7 @@ function launchVisualizer(audioSource) {
     // Guard: ignore if a newer track has already taken over
     if (_currentTrackId !== trackId) return
 
+    overlay.setLoadingHint(false)
     console.log('[lyrics]', track.name, lines ? `${lines.length} lines` : 'not found')
     if (lines?.length) {
       _lyrics = lines
@@ -292,11 +352,41 @@ function launchVisualizer(audioSource) {
       figureRenderer.setWords(lines)
       // Analyze mood in background — no await, applies when ready
       analyzeLyrics(track.name, track.artists?.[0]?.name, lines).then(map => {
-        if (map && _currentTrackId === trackId) {
-          _moodMap = map
-          console.log('[mood] ready', Object.keys(map).length, 'lines')
-          overlay.refineWithKeywords(map)
-        }
+        if (!map || _currentTrackId !== trackId) return
+        _moodMap = map
+        console.log('[mood] ready', Object.keys(map).length, 'lines')
+        overlay.refineWithKeywords(map)
+
+        // Mix: lyric keywords weighted by energy + mood-tag from dominant hue arc
+        const allKeywords = [...new Set(
+          Object.values(map)
+            .sort((a, b) => (b.energy || 0) - (a.energy || 0))  // high-energy lines first
+            .flatMap(m => m.keywords || [])
+        )].slice(0, 4)
+
+        // Dominant hue → mood search tag (appended to keyword query)
+        const hues = Object.values(map).map(m => m.hue ?? 200)
+        const avgHue = hues.reduce((a, b) => a + b, 0) / hues.length
+        const moodTag = avgHue < 60 ? 'passionate' : avgHue < 120 ? 'upbeat happy'
+          : avgHue < 180 ? 'chill calm' : avgHue < 240 ? 'melancholy sad'
+          : avgHue < 300 ? 'dark emotional' : 'romantic longing'
+        const keywords = allKeywords.length ? [...allKeywords, moodTag] : [moodTag]
+        Promise.all([
+          getRecommendations(track, keywords).catch(() => []),
+          getRecommendations(track, []).catch(() => []),
+        ]).then(([kwTracks, artistTracks]) => {
+          if (_currentTrackId !== trackId) return
+          kwTracks.forEach(t => { t._recType = 'lyric'; t._sourceKeywords = keywords })
+          artistTracks.forEach(t => { t._recType = 'artist' })
+          const seen = new Set([track.id])
+          const merged = []
+          const add = t => { if (t && !seen.has(t.id)) { seen.add(t.id); merged.push(t) } }
+          for (let i = 0; i < Math.max(kwTracks.length, artistTracks.length); i++) {
+            if (kwTracks[i])     add(kwTracks[i])
+            if (artistTracks[i]) add(artistTracks[i])
+          }
+          overlay.setRecommendations(merged.slice(0, 7))
+        })
       })
     } else {
       visualizer.lyricsMode = false
@@ -307,15 +397,6 @@ function launchVisualizer(audioSource) {
       updateInfoPanel(features)
     }
     if (analysis && audioSource.setAnalysis) audioSource.setAnalysis(analysis, features)
-
-    // Fetch recommendations in background — load into overlay when ready
-    if (track.id) {
-      getRecommendations(track.id, features).then(recTracks => {
-        if (_currentTrackId !== trackId) return  // track changed, discard
-        overlay.setRecommendations(recTracks)
-        console.log('[rec]', recTracks.length, 'tracks loaded')
-      }).catch(() => {})
-    }
   })
 
   // Rec node click → play immediately
@@ -364,6 +445,7 @@ function launchVisualizer(audioSource) {
     }
   }
   animate()
+  return sdkStateHandler
 }
 
 // ── Panel updates ──
@@ -470,9 +552,12 @@ function captureVisuals() {
 
 // ── Keyboard shortcuts ──
 document.addEventListener('keydown', e => {
+  // Escape → logout (works even without Spotify connection)
+  if (e.key === 'Escape') { logout(); location.reload(); return }
   if (!isLoggedIn()) return
   if (e.key === 'ArrowRight') { e.preventDefault(); skipToNext() }
   if (e.key === 'ArrowLeft')  { e.preventDefault(); skipToPrevious() }
+  if (e.key === ' ' && e.target === document.body) { e.preventDefault(); togglePlay() }
   if (e.key === 's' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); captureVisuals() }
 })
 

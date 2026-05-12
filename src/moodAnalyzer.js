@@ -4,32 +4,35 @@ export async function analyzeLyrics(trackName, artist, lines, userApiKey = null)
 
   const lyricsText = lines.map((l, i) => `${i}|${l.words}`).join('\n')
 
-  const prompt = `You are a visual music director. Analyze these lyrics and assign visual mood parameters to each line.
+  const prompt = `You are a visual music director. Analyze these lyrics holistically and assign visual mood parameters to each line.
 
 Song: "${trackName}" by ${artist}
 
 Lyrics (index|line):
 ${lyricsText}
 
+Step 1 — Understand the song's overall arc: What is the emotional journey? Where is the buildup, climax, and resolution? What is the dominant mood theme?
+
+Step 2 — Assign parameters per line, reflecting BOTH the line's content AND its position in the song's arc. Early lines should feel like setup, climax lines should peak, outros should resolve. Lines with similar words can have different energy/hue based on arc context.
+
 Return a JSON array — one object per line in the same order:
 [
   {
     "i": 0,
-    "hue": 220,        // dominant color hue 0-360 (0=red, 60=yellow, 120=green, 180=cyan, 240=blue, 300=purple)
-    "sat": 70,         // color saturation 30-100
-    "energy": 0.6,     // visual intensity 0.0-1.0
-    "spread": 0.5,     // particle spread/expansion 0.0-1.0 (0=contracted, 1=exploded)
-    "speed": 0.5,      // motion speed 0.0-1.0
-    "keywords": ["word1", "word2"]  // 1-3 words EXTRACTED DIRECTLY FROM THIS LINE — must appear verbatim in the line. Pick the most emotionally charged or visually evocative. Keep original language. Skip function words (the/a/and/i/to / 은/는/이/가/을/를/의/에/도). NEVER invent or summarize — only use words that exist in the line.
+    "hue": 220,        // 0-360 (0=red, 60=yellow, 120=green, 180=cyan, 240=blue, 300=purple). Should shift gradually across the arc.
+    "sat": 70,         // 30-100
+    "energy": 0.6,     // 0.0-1.0. Respect the arc — chorus lines higher than verses, bridge unique.
+    "spread": 0.5,     // 0.0-1.0
+    "speed": 0.5,      // 0.0-1.0
+    "keywords": ["word1", "word2"]  // 1-3 words EXTRACTED DIRECTLY FROM THIS LINE verbatim. Most emotionally charged or visually evocative. Keep original language. Skip function words. NEVER invent.
   }
 ]
 
 Rules:
-- Emotional/dark lines: low hue (200-280), low energy
-- Intense/climax lines: high energy (0.8-1.0), high spread
-- Warm/love lines: hue 0-40 or 300-360, mid energy
-- Cold/lonely lines: hue 180-240, low spread
-- Upbeat/joyful: hue 40-120, high speed
+- Respect arc: energy should BUILD toward chorus, DROP in bridge, PEAK at climax
+- Repeated lines (chorus) can have consistent hue but energy varies with context
+- Emotional/dark: hue 200-280, low energy. Intense/climax: energy 0.8-1.0, high spread
+- Warm/love: hue 0-40 or 300-360. Cold/lonely: hue 180-240, low spread. Upbeat: hue 40-120
 - Return ONLY the JSON array, no explanation.`
 
   try {

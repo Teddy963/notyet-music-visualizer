@@ -12,6 +12,8 @@ const SCOPES = [
   'user-read-playback-state',
   'streaming',
   'user-modify-playback-state',
+  'user-library-modify',
+  'user-library-read',
 ].join(' ')
 
 // PKCE helpers
@@ -111,6 +113,16 @@ export function isLoggedIn() {
   return !!localStorage.getItem('access_token')
 }
 
+// Validate token by hitting /me — returns false if token is bad
+export async function validateToken() {
+  const token = await getToken()
+  if (!token) return false
+  const res = await fetch('https://api.spotify.com/v1/me', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return res.ok
+}
+
 export function logout() {
   localStorage.removeItem('access_token')
   localStorage.removeItem('refresh_token')
@@ -119,45 +131,80 @@ export function logout() {
 }
 
 // API calls
+const getRateLimit = () => parseInt(localStorage.getItem('rl_until') || '0')
+const setRateLimit = (until) => localStorage.setItem('rl_until', String(until))
+
 async function apiFetch(path) {
+  if (Date.now() < getRateLimit()) return null  // still in backoff
   const token = await getToken()
   const res = await fetch(`https://api.spotify.com/v1${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (res.status === 204 || res.status === 404 || res.status === 403) return null
-  if (!res.ok) return null
+  if (res.status === 204) return null
+  if (res.status === 429) {
+    const retry = parseInt(res.headers.get('Retry-After') || '10')
+    setRateLimit(Date.now() + retry * 1000)
+    console.warn(`[spotify] 429 rate limited — backing off ${retry}s`)
+    return null
+  }
+  if (res.status === 403 || res.status === 404) return null
+  if (!res.ok) { console.warn(`[spotify] ${res.status} on ${path}`); return null }
   return res.json()
 }
 
 async function apiPost(path) {
+  if (Date.now() < getRateLimit()) return
   const token = await getToken()
-  await fetch(`https://api.spotify.com/v1${path}`, {
+  const res = await fetch(`https://api.spotify.com/v1${path}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   })
+  if (res.status === 429) {
+    const retry = parseInt(res.headers.get('Retry-After') || '10')
+    setRateLimit(Date.now() + retry * 1000)
+  }
 }
 
 async function apiPut(path, body) {
+  if (Date.now() < getRateLimit()) return
   const token = await getToken()
-  await fetch(`https://api.spotify.com/v1${path}`, {
+  const res = await fetch(`https://api.spotify.com/v1${path}`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  if (res.status === 429) {
+    const retry = parseInt(res.headers.get('Retry-After') || '10')
+    setRateLimit(Date.now() + retry * 1000)
+  }
 }
 
 export const skipToNext     = () => apiPost('/me/player/next')
 export const skipToPrevious = () => apiPost('/me/player/previous')
+export const togglePlay     = () => getPlayer()?.togglePlay()
+export const saveTrack      = (id) => apiPut(`/me/tracks?ids=${id}`, {})
+export const unsaveTrack    = async (id) => {
+  const token = await getToken()
+  await fetch(`https://api.spotify.com/v1/me/tracks?ids=${id}`, {
+    method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+  })
+}
+export const isTrackSaved   = async (id) => {
+  const data = await apiFetch(`/me/tracks/contains?ids=${id}`)
+  return Array.isArray(data) ? data[0] : false
+}
 
-export async function getRecommendations(trackId, features) {
-  const params = new URLSearchParams({ seed_tracks: trackId, limit: 7 })
-  if (features) {
-    if (features.energy  != null) params.set('target_energy',  features.energy.toFixed(2))
-    if (features.valence != null) params.set('target_valence', features.valence.toFixed(2))
-    if (features.tempo   != null) params.set('target_tempo',   Math.round(features.tempo))
-  }
-  const data = await apiFetch(`/recommendations?${params}`)
-  return data?.tracks ?? []
+export async function getRecommendations(track, keywords = []) {
+  // /recommendations (404) and top-tracks (403) blocked for new apps.
+  // Lyrics-based: search by Claude-extracted mood keywords. Fallback: artist name.
+  const query = keywords.length
+    ? keywords.slice(0, 4).join(' ')
+    : `artist:${track?.artists?.[0]?.name ?? ''}`
+  if (!query.trim()) return []
+  const params = new URLSearchParams({ q: query, type: 'track', limit: 8 })
+  const data = await apiFetch(`/search?${params}`)
+  const tracks = data?.tracks?.items ?? []
+  return tracks.filter(t => t.id !== track.id).slice(0, 7)
 }
 
 export function playTrack(trackUri) {
@@ -215,31 +262,40 @@ export async function getLyrics(track) {
   }
 }
 
-// Poll current track + features, call onUpdate(track, features, analysis) when track changes
+let _player = null
+export const getPlayer = () => _player
+
+// SDK-native polling — uses player_state_changed event (no HTTP) for track changes.
+// Audio features/analysis still use REST but only once per track change.
 export function startPolling(onUpdate) {
   let lastTrackId = null
 
-  async function poll() {
-    try {
-      const playing = await getCurrentTrack()
-      if (!playing?.item) return
+  async function handleState(state) {
+    if (!state) return
+    const sdkTrack = state.track_window?.current_track
+    if (!sdkTrack) return
+    const trackId = sdkTrack.id
+    if (!trackId || trackId === lastTrackId) return
+    lastTrackId = trackId
 
-      const trackId = playing.item.id
-      if (trackId === lastTrackId) return
-      lastTrackId = trackId
-
-      const [features, analysis] = await Promise.all([
-        getAudioFeatures(trackId).catch(() => null),
-        getAudioAnalysis(trackId).catch(() => null),
-      ])
-      onUpdate(playing.item, features, analysis)
-    } catch (e) {
-      console.warn('Spotify poll error:', e)
+    // Convert SDK track format to REST-compatible shape
+    const track = {
+      id: sdkTrack.id,
+      name: sdkTrack.name,
+      uri: sdkTrack.uri,
+      duration_ms: sdkTrack.duration_ms,
+      artists: sdkTrack.artists,
+      album: sdkTrack.album,
     }
+
+    const [features, analysis] = await Promise.all([
+      getAudioFeatures(trackId).catch(() => null),
+      getAudioAnalysis(trackId).catch(() => null),
+    ])
+    onUpdate(track, features, analysis)
   }
 
-  poll()
-  return setInterval(poll, 5000)
+  return handleState  // caller attaches this to player_state_changed
 }
 
 // Web Playback SDK
@@ -254,6 +310,7 @@ export function initPlayer(onReady, onStateChange, onError) {
         })
 
         player.addListener('ready', ({ device_id }) => {
+          _player = player
           onReady(device_id)
           resolve({ player, device_id })
         })
@@ -269,7 +326,6 @@ export function initPlayer(onReady, onStateChange, onError) {
       })
     }
 
-    // Set callback before loading SDK so it's ready when SDK fires it
     window.onSpotifyWebPlaybackSDKReady = ready
 
     if (!document.querySelector('script[src*="spotify-player"]')) {
@@ -282,13 +338,5 @@ export function initPlayer(onReady, onStateChange, onError) {
 
 // Transfer playback to the browser player
 export async function transferPlayback(deviceId) {
-  const token = await getToken()
-  await fetch('https://api.spotify.com/v1/me/player', {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ device_ids: [deviceId], play: true }),
-  })
+  await apiPut('/me/player', { device_ids: [deviceId], play: true })
 }

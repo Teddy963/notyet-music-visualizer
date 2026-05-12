@@ -67,6 +67,7 @@ canvas { display: block; position: fixed; inset: 0; opacity: 0.55; mix-blend-mod
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
   font-size: 0.7rem; letter-spacing: 0.05em;
   pointer-events: auto; display: none; line-height: 1.6;
+  z-index: 20;
 }
 #now-playing .track-row {
   display: flex; align-items: center; gap: 10px;
@@ -80,10 +81,12 @@ canvas { display: block; position: fixed; inset: 0; opacity: 0.55; mix-blend-mod
   pointer-events: auto;
 }
 #now-playing .skip-btn:hover { color: rgba(255,255,255,0.85); }
+#now-playing .like-btn.liked { color: #e05d7f; }
+#now-playing .like-btn.liked:hover { color: #ff7a9a; }
 
-/* ── Invert button ── */
+/* ── Invert button — moved to bottom-right, extending the button row ── */
 #invert-btn {
-  position: fixed; top: 28px; right: 28px;
+  position: fixed; bottom: 28px; right: 212px;
   width: 32px; height: 32px;
   border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.35);
   color: rgba(255,255,255,0.4); font-size: 0.8rem;

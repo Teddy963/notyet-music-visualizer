@@ -145,8 +145,8 @@ export class DataOverlay {
     this._sweepT     = 0   // radar sweep position 0→1 (left to right)
 
     // Color — smooth lerp toward target, overridden by mood when available
-    this._cr = 255; this._cg = 40;  this._cb = 40   // current (lerped)
-    this._tr = 255; this._tg = 40;  this._tb = 40   // target
+    this._cr = 232; this._cg = 175; this._cb = 0    // current (lerped) — AMBER baseline
+    this._tr = 232; this._tg = 175; this._tb = 0    // target — AMBER baseline
     this._moodColor = false   // true = mood override active, ignore setColor
 
     // Pre-placed detection nodes (all keywords from song)
@@ -156,6 +156,10 @@ export class DataOverlay {
     this._activeWords     = new Set()
     this._pendingKeywords = null
     this._lastActiveWords = null   // for re-activation after refine
+    this._subtitleCur     = ''    // current subtitle text
+    this._subtitlePrev    = ''    // previous subtitle (fading out)
+    this._subtitleAlpha   = 0    // 0→1 fade-in for current
+    this._subtitlePrevAlpha = 0  // 1→0 fade-out for previous
     this._mapReveal       = 0
     this._mapPinned       = false
 
@@ -186,8 +190,9 @@ export class DataOverlay {
     this._cascadeCd  = 0    // D cooldown — prevent cascade every beat
 
     // Mood color chips — accumulate as mood hue changes per lyric line
-    this._moodChips   = []   // [{r,g,b,born}]
+    this._moodChips   = []   // [{r,g,b,born}] — kept for compatibility
     this._lastMoodHue = null
+    this._moodStars   = []   // [{x,y,r,g,b,depth,size,phase,driftX,driftY,born,energy}]
 
     // World rotation + camera pan (force-directed layout)
     this._worldAngle  = 0      // slow auto-rotation (radians)
@@ -202,7 +207,7 @@ export class DataOverlay {
     this._dragLastX   = 0
     this._dragLastY   = 0
     this._dragVelX    = 0
-    this._tiltAngle   = 0.28
+    this._tiltAngle   = 0.18
     this._dragMoved   = false   // distinguish click vs drag
 
     // Recommendation nodes
@@ -245,7 +250,7 @@ export class DataOverlay {
       this._worldAngle += dx * 0.006
       // Cap velocity to prevent post-drag spinning lag
       this._dragVelX = Math.max(-1.2, Math.min(1.2, dx * 0.006 * 60))
-      this._tiltAngle = Math.max(0, Math.min(0.8, this._tiltAngle + dy * 0.003))
+      this._tiltAngle = Math.max(0, Math.min(0.42, this._tiltAngle + dy * 0.003))
     }
     const onUp = e => {
       if (!this._dragMoved && this._dragActive && !isUI(e)) {
@@ -281,22 +286,49 @@ export class DataOverlay {
 
   setRecommendations(tracks) {
     if (!tracks?.length) { this._recNodes = []; return }
-    const SR = (this._sphereR || 220) * 1.35  // slightly outside main sphere
-    this._recNodes = tracks.slice(0, 7).map((track, i) => {
-      const phi   = (i / tracks.length) * Math.PI * 2 + 0.4
-      const theta = Math.PI * 0.5 + (Math.random() - 0.5) * 0.6  // near equator
+    const baseR = this._sphereR || 220
+    // Split into two shells:
+    //   lyric/keyword recs → inner shell (1.25×)  — closer, denser
+    //   artist recs        → outer shell (1.65×)  — further, sparser
+    const INNER = baseR * 1.25
+    const OUTER = baseR * 1.65
+    const lyricTracks  = tracks.filter(t => (t._recType ?? 'lyric') === 'lyric')
+    const artistTracks = tracks.filter(t => t._recType === 'artist')
+
+    const now = Date.now()
+    const makeNode = (track, idx, total, shellR, recType, revealIdx) => {
+      // Spread nodes evenly on their shell, with slight latitude variation for depth
+      const phi   = (idx / total) * Math.PI * 2 + (recType === 'artist' ? 1.1 : 0.3)
+      // Inner shell: near equator; outer shell: higher latitude spread
+      const latSpread = recType === 'artist' ? 0.9 : 0.5
+      const theta = Math.PI * 0.5 + (((idx % 3) - 1) / 2) * latSpread
       return {
         track,
-        wx: SR * Math.sin(theta) * Math.cos(phi),
-        wy: SR * Math.cos(theta),
-        wz: SR * Math.sin(theta) * Math.sin(phi),
-        hue: (i / tracks.length) * 360,
+        recType,
+        shellR,  // store for depth normalization
+        wx: shellR * Math.sin(theta) * Math.cos(phi),
+        wy: shellR * Math.cos(theta),
+        wz: shellR * Math.sin(theta) * Math.sin(phi),
+        hue: (idx / total) * 360,
         alpha: 0,
+        _revealAt: now + revealIdx * 600,  // stagger 600ms apart
+        sourceKeywords: track._sourceKeywords ?? [],
         x: null, y: null,
         label: track.name.slice(0, 18) + (track.name.length > 18 ? '…' : ''),
         artist: track.artists?.[0]?.name ?? '',
       }
-    })
+    }
+
+    // Interleave lyric/artist for natural staggered order
+    const lyricNodes  = lyricTracks.map((t, i)  => makeNode(t, i, Math.max(lyricTracks.length, 1),  INNER, 'lyric',  0))
+    const artistNodes = artistTracks.map((t, i) => makeNode(t, i, Math.max(artistTracks.length, 1), OUTER, 'artist', 0))
+    const interleaved = []
+    for (let i = 0; i < Math.max(lyricNodes.length, artistNodes.length); i++) {
+      if (lyricNodes[i])  interleaved.push(lyricNodes[i])
+      if (artistNodes[i]) interleaved.push(artistNodes[i])
+    }
+    interleaved.forEach((rn, i) => { rn._revealAt = now + i * 600 })
+    this._recNodes = interleaved
   }
 
   _resize() {
@@ -307,44 +339,39 @@ export class DataOverlay {
 
   _buildGridCache() {
     const w = window.innerWidth, h = window.innerHeight
-    const cr = 232, cg = 175, cb = 0
-    const MINOR = 20, MAJOR = 80, CROSS = 5
-    const snap = v => Math.round(v) + 0.5
+    const cx = w * 0.5, cy = h * 0.5
 
-    if (!this._gridCanvas) {
-      this._gridCanvas = document.createElement('canvas')
-    }
+    if (!this._gridCanvas) this._gridCanvas = document.createElement('canvas')
     this._gridCanvas.width  = w
     this._gridCanvas.height = h
     const gc = this._gridCanvas.getContext('2d')
     gc.clearRect(0, 0, w, h)
 
-    // Fine grid
-    gc.lineWidth = 0.4
-    gc.strokeStyle = `rgba(${cr},${cg},${cb},0.045)`
-    gc.beginPath()
-    for (let x = 0; x < w; x += MINOR) { gc.moveTo(snap(x), 0); gc.lineTo(snap(x), h) }
-    for (let y = 0; y < h; y += MINOR) { gc.moveTo(0, snap(y)); gc.lineTo(w, snap(y)) }
-    gc.stroke()
+    // ── Depth rings + star field ──────────────────────────────────────────
+    // Concentric ellipses only (no radial lines — avoid overlap with sphere wireframe)
+    const N_BANDS = 12
+    for (let i = 1; i <= N_BANDS; i++) {
+      const t    = i / N_BANDS
+      const tExp = Math.pow(t, 1.8)       // exponential → perspective compression
+      const rx   = tExp * cx * 1.4
+      const ry   = tExp * cy * 1.4
+      const a    = 0.03 + tExp * 0.09    // innermost faint, outermost stronger
+      gc.lineWidth   = 0.3 + tExp * 0.5
+      gc.strokeStyle = `rgba(180,195,215,${a})`
+      gc.setLineDash(i % 3 === 0 ? [4, 8] : [])
+      gc.beginPath(); gc.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); gc.stroke()
+    }
+    gc.setLineDash([])
 
-    // Major grid
-    gc.lineWidth = 0.6
-    gc.strokeStyle = `rgba(${cr},${cg},${cb},0.09)`
-    gc.beginPath()
-    for (let x = 0; x < w; x += MAJOR) { gc.moveTo(snap(x), 0); gc.lineTo(snap(x), h) }
-    for (let y = 0; y < h; y += MAJOR) { gc.moveTo(0, snap(y)); gc.lineTo(w, snap(y)) }
-    gc.stroke()
-
-    // Registration crosshairs
-    gc.lineWidth = 0.7
-    gc.strokeStyle = `rgba(${cr},${cg},${cb},0.18)`
-    for (let x = 0; x <= w; x += MAJOR) {
-      for (let y = 0; y <= h; y += MAJOR) {
-        gc.beginPath()
-        gc.moveTo(snap(x) - CROSS, snap(y)); gc.lineTo(snap(x) + CROSS, snap(y))
-        gc.moveTo(snap(x), snap(y) - CROSS); gc.lineTo(snap(x), snap(y) + CROSS)
-        gc.stroke()
-      }
+    // Star field — depth scatter
+    const RNG = (seed) => { let x = Math.sin(seed) * 43758.5453; return x - Math.floor(x) }
+    for (let i = 0; i < 220; i++) {
+      const sx = RNG(i * 3.1)  * w
+      const sy = RNG(i * 7.4)  * h
+      const sr = RNG(i * 13.7) * 1.4 + 0.2
+      const sa = RNG(i * 5.9)  * 0.20 + 0.03
+      gc.beginPath(); gc.arc(sx, sy, sr, 0, Math.PI * 2)
+      gc.fillStyle = `rgba(200,210,230,${sa})`; gc.fill()
     }
   }
 
@@ -355,8 +382,22 @@ export class DataOverlay {
 
   // ── Called once per song ─────────────────────────────────────────────────────
   setLines(lines) {
-    if (!lines?.length) return
+    if (!lines?.length) {
+      this._nodes = []
+      this._edges = []
+      this._lines = []
+      this._drawOrder = []
+      return
+    }
     this._lines = lines
+    // Reset mood state for new song
+    this._moodChips    = []
+    this._moodStars    = []
+    this._lastMoodHue  = null
+    this._moodColor    = false
+    this._tr = 232; this._tg = 175; this._tb = 0  // back to amber baseline
+    this._subtitleCur  = ''; this._subtitlePrev = ''
+    this._subtitleAlpha = 0; this._subtitlePrevAlpha = 0
     const w = this.canvas.width, h = this.canvas.height
     const pad = 60
 
@@ -371,16 +412,19 @@ export class DataOverlay {
       }
     }
 
-    // Count all unique content words + build surface form map (root → first surface with particle)
+    // Count all unique content words + collect ALL surface forms per root
     const freq = {}
-    const surfaceMap = {}  // root → display surface form (e.g. "슬픔" → "슬픔에")
+    const surfaceForms = {}  // root → Set of all surface forms seen (e.g. "눈" → {"눈을","눈이","눈의"})
     for (const line of lines) {
       const seen = new Set()
       for (const raw of line.words.split(/\s+/)) {
         if (!/[가-힣]/.test(raw)) continue
         const rawKo = raw.replace(/[^가-힣]/g, '')
         const [root] = stripKoParticle(rawKo)
-        if (root && root.length >= 2 && !surfaceMap[root]) surfaceMap[root] = rawKo
+        if (root && root.length >= 2) {
+          if (!surfaceForms[root]) surfaceForms[root] = []
+          if (!surfaceForms[root].includes(rawKo)) surfaceForms[root].push(rawKo)
+        }
       }
       for (const t of tokenize(line.words)) {
         if (!seen.has(t)) { freq[t] = (freq[t] || 0) + 1; seen.add(t) }
@@ -391,16 +435,22 @@ export class DataOverlay {
     const maxFreq    = sorted[0]?.[1] ?? 1
     const titleWords = this._titleWords ?? new Set()
 
-    this._nodes = sorted.map(([word, count], nodeIdx) => {
+    // Cap at 60 nodes — keeps performance stable and sphere readable
+    const MAX_NODES  = 60
+    const capped     = sorted.slice(0, MAX_NODES)
+
+    this._nodes = capped.map(([word, count], nodeIdx) => {
       const h3 = wordHash(word, 3), h4 = wordHash(word, 4)
       const isTitle = titleWords.has(word)
       const freqScale = Math.log2(count + 1) / Math.log2(maxFreq + 1)
       const size = 5 + h4 * 4 + freqScale * 28 + (isTitle ? 14 : 0)
       const type = h3 > 0.5 ? 'circle' : 'box'
-      // Display: surface form with particle if Korean (e.g. "슬픔에"), else uppercase
-      const surface = /[가-힣]/.test(word) ? (surfaceMap[word] ?? word) : word.toUpperCase()
+      const forms = surfaceForms[word]
+      // Display: first surface form as default (e.g. "눈을"), else uppercase for English
+      const surface = /[가-힣]/.test(word) ? (forms?.[0] ?? word) : word.toUpperCase()
       return {
         word, parts: [word], display: surface,
+        _koForms: forms?.length > 1 ? new Set(forms) : null,  // null if only one form
         x: w * 0.5, y: h * 0.5,
         type, size, rot: (h3 - 0.5) * 0.4, freq: count,
         isCore: isTitle || count >= Math.max(2, maxFreq * 0.35),
@@ -410,6 +460,59 @@ export class DataOverlay {
         hue: wordHash(word, 5) * 360,
       }
     })
+
+    // ── Lyric-only nodes: words not in keyword set, activate only on their line ──
+    const keywordSet = new Set(this._nodes.map(n => n.word))
+    const lyricOnlyFreq = {}   // word → count of lines it appears in
+    const lyricOnlyForms = {}  // word → first surface form
+    for (const line of lines) {
+      const seenInLine = new Set()
+      for (const raw of line.words.split(/\s+/)) {
+        const isKo = /[가-힣]/.test(raw)
+        let word
+        if (isKo) {
+          const rawKo = raw.replace(/[^가-힣]/g, '')
+          const [root] = stripKoParticle(rawKo)
+          if (!root || root.length < 2) continue
+          word = root
+          if (!lyricOnlyForms[root]) lyricOnlyForms[root] = rawKo
+        } else {
+          word = raw.replace(/[^a-zA-Z']/g, '').toLowerCase()
+          if (word.length < 2) continue
+          if (STOPWORDS.has(word) || ATTACH_WORDS.has(word) || CONNECTOR_WORDS.has(word)) continue
+        }
+        if (keywordSet.has(word)) continue  // already a keyword node
+        if (!seenInLine.has(word)) {
+          lyricOnlyFreq[word] = (lyricOnlyFreq[word] || 0) + 1
+          seenInLine.add(word)
+        }
+      }
+    }
+    const MAX_LYRIC_NODES = 120  // all non-keyword words; invisible when dormant so no visual clutter
+    const lyricOnlyWords = Object.entries(lyricOnlyFreq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_LYRIC_NODES)
+
+    const lyricNodes = lyricOnlyWords.map(([word], i) => {
+      const h3 = wordHash(word, 3)
+      const isKo = /[가-힣]/.test(word)
+      const surface = isKo ? (lyricOnlyForms[word] ?? word) : word.toUpperCase()
+      const forms = surfaceForms[word]
+      return {
+        word, parts: [word], display: surface,
+        _koForms: forms?.length > 1 ? new Set(forms) : null,
+        isLyricOnly: true,
+        x: 0, y: 0,
+        type: 'lyric',
+        size: 4,
+        rot: 0, freq: lyricOnlyFreq[word],
+        isCore: false, isTitle: false, isConnector: false, isAttach: false,
+        state: 'dormant', alpha: 0, activeTimer: 0,
+        _nodeIdx: this._nodes.length + i,
+        hue: wordHash(word, 5) * 360,
+      }
+    })
+    this._nodes = [...this._nodes, ...lyricNodes]
 
     // ── Build edges → radial sphere layout ───────────────────────────────
     this._buildEdges(lines)
@@ -440,10 +543,10 @@ export class DataOverlay {
       }
     }
 
-    // Sequential window-3: connects consecutive words within each line
-    // Bigram (i→i+1) + skip-gram (i→i+2) only — no full cliques
-    const W = 3
+    // Bigram only (i→i+1) — skip-gram removed to reduce edge density
+    const MAX_EDGES = 80
     for (const line of lines) {
+      if (this._edges.length >= MAX_EDGES) break
       const tokens = tokenize(line.words)
       const seen = new Set()
       const idxSeq = []
@@ -452,9 +555,10 @@ export class DataOverlay {
           if (!seen.has(idx)) { seen.add(idx); idxSeq.push(idx) }
         }
       }
-      for (let i = 0; i < idxSeq.length; i++)
-        for (let j = i + 1; j < Math.min(idxSeq.length, i + W); j++)
-          addEdge(idxSeq[i], idxSeq[j], true)  // all window-3 edges are same-line
+      for (let i = 0; i < idxSeq.length - 1; i++) {
+        if (this._edges.length >= MAX_EDGES) break
+        addEdge(idxSeq[i], idxSeq[i + 1], true)
+      }
     }
   }
 
@@ -506,9 +610,9 @@ export class DataOverlay {
   }
 
   // ── Per lyric line ───────────────────────────────────────────────────────────
-  // Called every frame with visualizer accent — only apply when no mood override
+  // Called every frame with visualizer accent — keep AMBER as baseline until mood kicks in
   setColor(r, g, b) {
-    if (!this._moodColor) { this._tr = r; this._tg = g; this._tb = b }
+    if (!this._moodColor) { this._tr = 232; this._tg = 175; this._tb = 0 }
   }
 
   setLineMood(mood) {
@@ -524,7 +628,9 @@ export class DataOverlay {
       const hue = Math.round(mood.hue)
       if (this._lastMoodHue !== hue) {
         this._lastMoodHue = hue
-        this._moodChips.push({ r: this._tr, g: this._tg, b: this._tb, born: 0, energy: mood.energy ?? 0.5 })
+        const chipEnergy = mood.energy ?? 0.5
+        this._moodChips.push({ r: this._tr, g: this._tg, b: this._tb, born: 0, energy: chipEnergy })
+        this._spawnMoodStar(this._tr, this._tg, this._tb, chipEnergy)
       }
     } else {
       this._moodColor = false  // fall back to visualizer accent
@@ -540,7 +646,43 @@ export class DataOverlay {
 
   setMapPinned(v) { this._mapPinned = v }
 
-  setSubtitle(text) { this._lastActiveWords = text; this.setActiveLine(text) }
+  setSubtitle(text) {
+    this._lastActiveWords = text
+    this.setActiveLine(text)
+    if (text !== this._subtitleCur) {
+      this._subtitlePrev      = this._subtitleCur
+      this._subtitlePrevAlpha = this._subtitleAlpha
+      this._subtitleCur       = text || ''
+      this._subtitleAlpha     = text ? 0 : 1  // clear instantly; new text fades in
+    }
+  }
+
+  setLoadingHint(active) { this._loadingHint = active }
+
+  _spawnMoodStar(r, g, b, energy) {
+    const w = this.canvas.width  || window.innerWidth
+    const h = this.canvas.height || window.innerHeight
+    const cx = w * 0.5, cy = h * 0.5
+    const sr = (this._sphereR || 220) * 1.15  // avoid sphere area
+
+    // Random position outside sphere, within canvas with padding
+    let x, y, attempts = 0
+    do {
+      x = 40 + Math.random() * (w - 80)
+      y = 40 + Math.random() * (h - 80)
+      attempts++
+    } while (Math.hypot(x - cx, y - cy) < sr && attempts < 30)
+
+    const depth  = 0.15 + Math.random() * 0.85   // 0=far/tiny, 1=close/large
+    const size   = 3 + depth * (8 + energy * 6)  // 3–17px based on depth+energy
+    const phase  = Math.random() * Math.PI * 2    // twinkle offset
+    const speed  = 0.4 + Math.random() * 0.6      // twinkle speed
+    // Very slow drift — gives life without being distracting
+    const driftX = (Math.random() - 0.5) * 12
+    const driftY = (Math.random() - 0.5) * 12
+
+    this._moodStars.push({ x, y, r, g, b, depth, size, phase, speed, driftX, driftY, born: 0, energy })
+  }
 
   // factor 0-1: repeat intensity. line = raw lyric text to find repeated word's node.
   setRepeat(factor, line) {
@@ -619,6 +761,13 @@ export class DataOverlay {
       if (matches) {
         n.state = 'active'; n.activeTimer = 0; n.alpha = 0
         activeIdxs.add(i)
+        // Dynamic Korean surface form: update display to match current line's particle
+        if (n._koForms) {
+          for (const raw of words.split(/\s+/)) {
+            const rawKo = raw.replace(/[^가-힣]/g, '')
+            if (n._koForms.has(rawKo)) { n.display = rawKo; break }
+          }
+        }
         // Repeated word → emit extra expanding rings (staggered)
         const reps = repeatCount[n.word] || 1
         for (let r = 1; r < reps; r++) {
@@ -648,8 +797,9 @@ export class DataOverlay {
       this._targetCamY = sy / actNodes.length
     }
 
-    // Neighbors: activate at half brightness
+    // Neighbors: only sameLine edges — keeps activation tight to current lyric line
     for (const edge of this._edges) {
+      if (!edge.sameLine) continue
       const aIsActive = activeIdxs.has(edge.a), bIsActive = activeIdxs.has(edge.b)
       if (aIsActive && !activeIdxs.has(edge.b)) {
         const nb = this._nodes[edge.b]
@@ -837,7 +987,7 @@ export class DataOverlay {
     this._cr += (this._tr - this._cr) * ls
     this._cg += (this._tg - this._cg) * ls
     this._cb += (this._tb - this._cb) * ls
-    const cr = 232, cg = 175, cb = 0  // AMBER LOCK — structural layer (wireframe, HUD)
+    const cr = 215, cg = 225, cb = 235  // AVIATION WHITE — structural layer (wireframe, HUD, dormant nodes)
     // Active layer — mood color, lerped per lyric line
     const acr = Math.round(this._cr), acg = Math.round(this._cg), acb = Math.round(this._cb)
     // Dormant nodes — amber tinted toward mood (60% amber, 40% mood)
@@ -903,8 +1053,9 @@ export class DataOverlay {
     this._pulseCd -= delta
     if (this._pulseCd <= 0 && this._edges.length > 0) {
       const activeEdges = this._edges.filter(e => {
+        if (!e.sameLine) return false
         const na = this._nodes[e.a], nb = this._nodes[e.b]
-        return na && nb && (na.state === 'active' || nb.state === 'active')
+        return na && nb && na.state === 'active' && nb.state === 'active'
       })
       if (activeEdges.length > 0) {
         const e  = activeEdges[Math.floor(Math.random() * activeEdges.length)]
@@ -949,15 +1100,15 @@ export class DataOverlay {
           while (da < -Math.PI) da += Math.PI * 2
           // Gentle lerp — only when inertia is negligible
           const focusStrength = Math.max(0, 1 - velMag / 0.008)
-          this._worldAngle += da * Math.min(1, delta * 0.8 * focusStrength)
+          this._worldAngle += da * Math.min(1, delta * 0.35 * focusStrength)
 
           // Auto-tilt: rotate X axis so active node centroid lands near vertical center
           const activeForTilt = this._nodes.filter(n => n.state === 'active' && n.wx != null && (n._ring ?? 99) > 0)
           if (activeForTilt.length > 0) {
             const avgWY = activeForTilt.reduce((sum, n) => sum + n.wy, 0) / activeForTilt.length
             const tiltTarget = Math.atan2(avgWY, this._sphereR || 220)
-            const clampedTilt = Math.max(0, Math.min(0.75, tiltTarget))
-            this._tiltAngle += (clampedTilt - this._tiltAngle) * Math.min(1, delta * 0.6 * focusStrength)
+            const clampedTilt = Math.max(0, Math.min(0.42, tiltTarget))
+            this._tiltAngle += (clampedTilt - this._tiltAngle) * Math.min(1, delta * 0.25 * focusStrength)
           }
         } else if (!focusNode) {
           // No active node — slow drift
@@ -1016,13 +1167,13 @@ export class DataOverlay {
         const p   = FOCAL / dz
         rn.x = w * 0.5 + rx0 * p
         rn.y = h * 0.5 + ry  * p
-        rn._depth = (rz + SR * 1.35) / (2 * SR * 1.35)
+        rn._depth = (rz + (rn.shellR || SR * 1.35)) / (2 * (rn.shellR || SR * 1.35))
         rn.alpha  = Math.min(1, rn.alpha + delta * 0.8)  // fade in
       }
     }
 
     // Phosphor persistence — fade previous frame instead of hard clear
-    ctx.fillStyle = 'rgba(0,0,0,0.90)'
+    ctx.fillStyle = 'rgba(0,0,0,0.88)'
     ctx.fillRect(0, 0, w, h)
 
     // ── Blueprint grid — pre-baked offscreen, single drawImage per frame ──
@@ -1077,31 +1228,29 @@ export class DataOverlay {
         if (!na || !nb || na.wx == null || nb.wx == null) continue
 
         const aActive = na.state === 'active', bActive = nb.state === 'active'
-        const bothActive   = aActive && bActive
-        const eitherActive = aActive || bActive
+        // Only light up edge if BOTH endpoints are active AND the edge is a same-line bigram.
+        // "eitherActive" was causing every edge touching a common word (you/the/it) to light up.
+        const bothActive   = aActive && bActive && edge.sameLine
+        const eitherActive = false  // disabled — too noisy
 
         let alpha, lw
-        if (bothActive)        { alpha = 0.95; lw = 1.8 }
-        else if (eitherActive) { alpha = 0.55; lw = 1.1 }
-        else                   { alpha = 0.18 + this._mapReveal * 0.12; lw = 0.75 }
+        if (bothActive) { alpha = 0.95; lw = 1.8 }
+        else            { alpha = 0.22 + this._mapReveal * 0.10; lw = 0.75 }
 
-        // CRT phosphor bloom on active edges, flat on dormant
+        // CRT phosphor bloom on active edges only
         if (bothActive) {
           ctx.shadowBlur  = 5 + this._beatFlash * 10
           ctx.shadowColor = `rgba(${acr},${acg},${acb},0.75)`
-        } else if (eitherActive) {
-          ctx.shadowBlur  = 2
-          ctx.shadowColor = `rgba(${acr},${acg},${acb},0.4)`
         } else {
           ctx.shadowBlur = 0
         }
 
         ctx.lineWidth = lw
 
-        // Active: mood color. Dormant: amber
-        const er = eitherActive ? acr : cr
-        const eg = eitherActive ? acg : cg
-        const eb = eitherActive ? acb : cb
+        // Active: mood color. Dormant: structural white
+        const er = bothActive ? acr : cr
+        const eg = bothActive ? acg : cg
+        const eb = bothActive ? acb : cb
         const segColor = (t, depth) => {
           const a = alpha * (depth * (edge.sameLine ? 0.88 : 0.75) + 0.06)
           return `rgba(${er},${eg},${eb},${a})`
@@ -1115,7 +1264,7 @@ export class DataOverlay {
           // Glitch: snap mid-point for center-spoke edges
           const glitchMag0 = this._edgeGlitch
           const mx = (na.x + nb.x) / 2, my = (na.y + nb.y) / 2
-          if (glitchMag0 > 0.1 && eitherActive) {
+          if (glitchMag0 > 0.1 && bothActive) {
             const seed = edge.a * 53 + edge.b * 29 + Math.floor(this.time * 8)
             const rng  = ((seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff
             if (rng < glitchMag0 * 0.5) {
@@ -1129,7 +1278,7 @@ export class DataOverlay {
           ctx.beginPath(); ctx.moveTo(na.x, na.y); ctx.lineTo(nb.x, nb.y); ctx.stroke()
         } else {
           // SLERP along sphere surface: sample N intermediate points, project each
-          const STEPS = eitherActive ? 12 : 7
+          const STEPS = bothActive ? 12 : 7
           const pts = []
           for (let si = 0; si <= STEPS; si++) {
             const t  = si / STEPS
@@ -1140,7 +1289,7 @@ export class DataOverlay {
           // Edge glitch: on strong beats, randomly snap a 1-3 segment run sideways
           const glitchMag = this._edgeGlitch
           let glitchRun = null
-          if (glitchMag > 0.08 && eitherActive) {
+          if (glitchMag > 0.08 && bothActive) {
             // Each edge independently decides whether to glitch this frame
             const seed = edge.a * 31 + edge.b * 17 + Math.floor(this.time * 8)
             const rng  = ((seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff
@@ -1170,15 +1319,6 @@ export class DataOverlay {
 
     ctx.shadowBlur = 0
 
-    // ── Sphere equator outline — single crisp ring (Pioneer plaque) ──────
-    if (pp) {
-      const { SR, w: pw, h: ph } = pp
-      const scx = pw * 0.5, scy = ph * 0.5
-      ctx.setLineDash([])
-      ctx.lineWidth = 1.5
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${0.45 + this._beatFlash * 0.20})`
-      ctx.beginPath(); ctx.arc(px(scx), px(scy), SR, 0, Math.PI * 2); ctx.stroke()
-    }
 
     // ── Sphere wireframe — 4 latitude rings + 8 longitude lines + tick marks ──
     if (pp) {
@@ -1207,7 +1347,7 @@ export class DataOverlay {
         for (let i = 0; i <= STEPS; i++) {
           const phi = (i / STEPS) * Math.PI * 2
           const pt = projWF(SR * rLat * Math.cos(phi), SR * yLat, SR * rLat * Math.sin(phi))
-          if (prev && pt.depth > 0.05) {
+          if (prev && pt.depth > 0.05 && prev.depth > 0.05) {
             ctx.strokeStyle = `rgba(${cr},${cg},${cb},${WF_BASE * pt.depth})`
             ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(pt.x, pt.y); ctx.stroke()
           }
@@ -1238,7 +1378,7 @@ export class DataOverlay {
         ctx.lineWidth = 0.8
         for (let si = 1; si <= STEPS_LON; si++) {
           const pt = pts[si], prev = pts[si - 1]
-          if (pt.depth > 0.05) {
+          if (pt.depth > 0.05 && prev.depth > 0.05) {
             ctx.strokeStyle = `rgba(${cr},${cg},${cb},${WF_BASE * pt.depth})`
             ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(pt.x, pt.y); ctx.stroke()
           }
@@ -1287,10 +1427,17 @@ export class DataOverlay {
       n.activeTimer += delta
 
       if (n.state === 'dormant') {
-        // Brightness decreases by ring: center = always prominent, outer = barely visible
-        const RING_ALPHA = [0.95, 0.78, 0.58, 0.38, 0.20, 0.11, 0.06]
-        const target = RING_ALPHA[Math.min(n._ring ?? 6, RING_ALPHA.length - 1)]
-        n.alpha += (target - n.alpha) * Math.min(1, delta * 1.8)
+        if (n.isLyricOnly) {
+          n.alpha = Math.max(0, n.alpha - delta * 3)
+        } else {
+          // Beat-only flicker: invisible base, flash on beat
+          // Inner rings flash brighter, outer rings barely visible
+          const ringDepth  = 1 - Math.min(1, (n._ring ?? 5) / 5)   // 1=center, 0=outer
+          const beatTarget = this._beatFlash * (0.08 + ringDepth * 0.22)
+          // Fast attack on beat, slower fade to dark
+          const rate = beatTarget > n.alpha ? delta * 18 : delta * 3
+          n.alpha = Math.max(0, Math.min(0.32, n.alpha + (beatTarget - n.alpha) * Math.min(1, rate)))
+        }
       } else if (n.state === 'active') {
         n.alpha = Math.min(0.92, n.alpha + delta * 4)
       } else if (n.state === 'neighbor') {
@@ -1307,7 +1454,7 @@ export class DataOverlay {
       const isActive  = n.state === 'active'
       const isHub     = (n._ring ?? 99) <= 1   // ring 0,1 = hub nodes
       const a = Math.min(1, (n.alpha + beatBoost) * projAlpha)
-      const showLabel = isActive || (isHub && a > 0.25) || (this._mapPinned && n.display)
+      const showLabel = isActive || (isHub && a > 0.25) || ((n._ring ?? 99) <= 2 && a > 0.4) || (this._mapPinned && n.display)
 
       // Perspective-scaled draw size — hubs large, leaves tiny
       const drawSize = Math.max(1.5, n.size * projScale)
@@ -1315,6 +1462,36 @@ export class DataOverlay {
       const r3      = Math.max(1.5, drawSize * 0.55)
       const isCenter = (n._ring ?? 99) === 0
       const isMid    = (n._ring ?? 99) <= 3 && !isHub   // ring 2-3: middle layer
+
+      // Lyric-only: invisible when dormant/fading, minimal render when active
+      if (n.isLyricOnly) {
+        if (a < 0.02) continue
+        if (isActive) {
+          // Small diamond ◇ with mood color
+          ctx.shadowBlur  = 6 + this._beatFlash * 8
+          ctx.shadowColor = `rgba(${acr},${acg},${acb},0.7)`
+          const d = Math.max(3, drawSize * 0.45)
+          ctx.lineWidth   = 1.0
+          ctx.strokeStyle = `rgba(${acr},${acg},${acb},${a})`
+          ctx.beginPath()
+          ctx.moveTo(n.x, n.y - d); ctx.lineTo(n.x + d, n.y)
+          ctx.lineTo(n.x, n.y + d); ctx.lineTo(n.x - d, n.y)
+          ctx.closePath(); ctx.stroke()
+          ctx.shadowBlur = 0
+        } else {
+          // Fading: just a tiny dot
+          ctx.beginPath(); ctx.arc(n.x, n.y, Math.max(1, r3 * 0.35), 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${acr},${acg},${acb},${a * 0.6})`; ctx.fill()
+        }
+        // Label when active
+        if (isActive && n.display) {
+          ctx.font      = `300 9px 'Courier New', monospace`
+          ctx.textAlign = 'center'
+          ctx.fillStyle = `rgba(${acr},${acg},${acb},${a * 0.75})`
+          ctx.fillText(n.display, n.x, n.y - Math.max(3, drawSize * 0.45) - 4)
+        }
+        continue
+      }
 
       // Back-facing tiny nodes → cheap dot (skip full render)
       if (!isActive && !isHub && projAlpha < 0.20 && drawSize < 5) {
@@ -1353,18 +1530,52 @@ export class DataOverlay {
         ctx.beginPath(); ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2); ctx.fill()
 
       } else {
-        // Dormant: flat crisp — Pioneer plaque style
+        // Dormant: shape by ring — Pioneer plaque style
         ctx.shadowBlur = 0
-        // Depth fading reduced: back nodes still clearly readable
-        const depthFactor = 0.12 + projAlpha * 0.88   // back ~12%, front ~100%
+        const depthFactor  = 0.12 + projAlpha * 0.88
+        const ring         = n._ring ?? 99
         const outlineAlpha = depthFactor * (isHub ? 0.90 : isMid ? 0.75 : 0.58)
-        ctx.lineWidth   = isHub ? 1.6 : isMid ? 1.2 : 0.9
-        ctx.strokeStyle = `rgba(${dcr},${dcg},${dcb},${outlineAlpha})`
-        ctx.beginPath(); ctx.arc(n.x, n.y, outerR, 0, Math.PI * 2); ctx.stroke()
+        const dotAlpha     = depthFactor * (isHub ? 1.0  : isMid ? 0.82 : 0.65)
+        ctx.strokeStyle    = `rgba(${dcr},${dcg},${dcb},${outlineAlpha})`
+        ctx.fillStyle      = `rgba(${dcr},${dcg},${dcb},${dotAlpha})`
 
-        const dotAlpha = depthFactor * (isHub ? 1.0 : isMid ? 0.82 : 0.65)
-        ctx.fillStyle = `rgba(${dcr},${dcg},${dcb},${dotAlpha})`
-        ctx.beginPath(); ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2); ctx.fill()
+        if (ring === 0) {
+          // ⊕ Hub center: circle + internal cross
+          ctx.lineWidth = 1.8
+          ctx.beginPath(); ctx.arc(n.x, n.y, outerR, 0, Math.PI * 2); ctx.stroke()
+          ctx.lineWidth = 1.0
+          const arm = outerR * 0.65
+          ctx.beginPath()
+          ctx.moveTo(n.x - arm, n.y); ctx.lineTo(n.x + arm, n.y)
+          ctx.moveTo(n.x, n.y - arm); ctx.lineTo(n.x, n.y + arm)
+          ctx.stroke()
+          ctx.beginPath(); ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2); ctx.fill()
+
+        } else if (ring <= 2) {
+          // ○ Ring 1-2: standard circle (current)
+          ctx.lineWidth = isHub ? 1.6 : 1.2
+          ctx.beginPath(); ctx.arc(n.x, n.y, outerR, 0, Math.PI * 2); ctx.stroke()
+          ctx.beginPath(); ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2); ctx.fill()
+
+        } else if (ring <= 4) {
+          // △ Ring 3-4: triangle, no center dot
+          ctx.lineWidth = 1.0
+          const h = outerR * 1.15
+          ctx.beginPath()
+          ctx.moveTo(n.x,              n.y - h)
+          ctx.lineTo(n.x + h * 0.87,  n.y + h * 0.5)
+          ctx.lineTo(n.x - h * 0.87,  n.y + h * 0.5)
+          ctx.closePath(); ctx.stroke()
+
+        } else {
+          // × Ring 5+: diagonal cross (×), no outer ring — visually distinct from ⊕
+          ctx.lineWidth = 0.9
+          const arm = outerR * 0.8
+          ctx.beginPath()
+          ctx.moveTo(n.x - arm, n.y - arm); ctx.lineTo(n.x + arm, n.y + arm)
+          ctx.moveTo(n.x + arm, n.y - arm); ctx.lineTo(n.x - arm, n.y + arm)
+          ctx.stroke()
+        }
       }
 
       // All node types: same circle rendering — box type no longer used
@@ -1409,8 +1620,8 @@ export class DataOverlay {
             ctx.fillText((n.display ?? n.word).toUpperCase(), endX + dir * 6, midY + fz * 0.36)
           } else {
             // ATC waypoint style — code right of symbol, vertically centered
-            ctx.font = `400 7px 'Space Mono', 'Noto Sans KR', monospace`
-            ctx.fillStyle = `rgba(${dcr},${dcg},${dcb},${a * 0.72})`
+            ctx.font = `400 9px 'Space Mono', 'Noto Sans KR', monospace`
+            ctx.fillStyle = `rgba(${dcr},${dcg},${dcb},${a * 0.88})`
             ctx.textAlign = 'left'
             ctx.fillText((n.display ?? n.word).toUpperCase(), n.x + outerR + 3, n.y + 2.5)
           }
@@ -1608,53 +1819,71 @@ export class DataOverlay {
     }
     ctx.restore()
 
-    // ── Mood garden — top-left, 2 rows of dots, stacking right ─────────
-    if (this._moodChips.length > 0) {
-      const total  = this._moodChips.length
-      const gap    = 14   // center-to-center spacing
-      const baseX  = 24
-      const baseY  = 22
-      this._moodChips.forEach((chip, i) => {
-        chip.born = Math.min(1, (chip.born || 0) + delta * 2.5)
-        const isNewest = i === total - 1
-        const ageFade  = 0.2 + (i / total) * 0.7
-        const a        = ageFade * chip.born
-        const col = Math.floor(i / 2)
-        const row = i % 2
-        const cx = baseX + col * gap
-        const cy = baseY + row * gap
-        const r  = 3.5 + (chip.energy ?? 0.5) * 3.0   // 3.5 – 6.5 px
-        // Soft glow
-        const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 2.2)
-        grd.addColorStop(0, `rgba(${chip.r},${chip.g},${chip.b},${a * 0.35})`)
-        grd.addColorStop(1, `rgba(${chip.r},${chip.g},${chip.b},0)`)
-        ctx.beginPath(); ctx.arc(cx, cy, r * 2.2, 0, Math.PI * 2)
-        ctx.fillStyle = grd; ctx.fill()
-        // Solid dot
-        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(${chip.r},${chip.g},${chip.b},${a})`
+    // ── Mood nebula — large atmospheric color clouds that dye the space ────────
+    // Draw all nebula patches to offscreen, blur once, composite — avoids per-star blur overhead
+    if (this._moodStars.length > 0) {
+      // Lazy-init nebula offscreen canvas
+      if (!this._nebulaCanvas) {
+        this._nebulaCanvas = document.createElement('canvas')
+        this._nebulaCanvas.width  = w
+        this._nebulaCanvas.height = h
+      } else if (this._nebulaCanvas.width !== w || this._nebulaCanvas.height !== h) {
+        this._nebulaCanvas.width  = w
+        this._nebulaCanvas.height = h
+      }
+      const nc = this._nebulaCanvas.getContext('2d')
+      nc.clearRect(0, 0, w, h)
+
+      for (const s of this._moodStars) {
+        s.born = Math.min(1, s.born + delta * 0.5)   // ~2s fade-in
+        s.x += s.driftX * delta * 0.008              // near-imperceptible drift
+        s.y += s.driftY * delta * 0.008
+
+        // Breathe: slow pulse tied to song time
+        const breathe = 0.75 + 0.25 * Math.sin(this.time * s.speed * 0.4 + s.phase)
+        const a = 0.06 + s.depth * 0.07              // 0.06–0.13: subtle, won't dominate
+        const patchR = 60 + s.depth * 120            // 60–180px patch radius
+
+        const grd = nc.createRadialGradient(s.x, s.y, 0, s.x, s.y, patchR)
+        grd.addColorStop(0,    `rgba(${s.r},${s.g},${s.b},${a * breathe * s.born})`)
+        grd.addColorStop(0.45, `rgba(${s.r},${s.g},${s.b},${a * 0.35 * breathe * s.born})`)
+        grd.addColorStop(1,    `rgba(${s.r},${s.g},${s.b},0)`)
+        nc.beginPath(); nc.arc(s.x, s.y, patchR, 0, Math.PI * 2)
+        nc.fillStyle = grd; nc.fill()
+      }
+
+      // Blur the whole nebula layer once — creates soft cloud-like diffusion
+      ctx.save()
+      ctx.filter = 'blur(28px)'
+      ctx.drawImage(this._nebulaCanvas, 0, 0)
+      ctx.filter = 'none'
+      ctx.restore()
+
+      // Tiny bright spark at each nebula center — subtle star presence, not an icon
+      for (const s of this._moodStars) {
+        const sparkA = (0.3 + s.depth * 0.4) * s.born * (0.7 + 0.3 * Math.sin(this.time * s.speed * 2 + s.phase))
+        ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(0.8, s.depth * 2), 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${s.r},${s.g},${s.b},${sparkA})`
         ctx.fill()
-        if (isNewest) {
-          ctx.beginPath(); ctx.arc(cx, cy, r + 2.5, 0, Math.PI * 2)
-          ctx.strokeStyle = `rgba(${chip.r},${chip.g},${chip.b},${a * 0.45})`
-          ctx.lineWidth = 0.8; ctx.stroke()
-        }
-      })
+      }
     }
 
     // ── Recommendation nodes — outer shell, always visible ───────────────
+    const nowMs = Date.now()
     for (const rn of this._recNodes) {
       if (rn.x == null) continue
+      if (nowMs < rn._revealAt) continue  // staggered reveal — not yet
       rn.alpha = Math.min(0.92, rn.alpha + delta * 0.6)
       const depth = rn._depth ?? 0.5
       const a     = rn.alpha * (depth * 0.7 + 0.3)
       const H     = rn.hue
-      const R     = 10   // fixed small radius
+      // Artist nodes (outer shell) slightly larger; lyric nodes compact
+      const R     = rn.recType === 'artist' ? 13 : 10
 
       // Hover detection — brighten if mouse nearby
       const hovered = this._hoverX != null && Math.hypot(rn.x - this._hoverX, rn.y - this._hoverY) < 36
 
-      // Glow
+      // Glow (shared)
       const glowR = R * (hovered ? 4.5 : 3.0)
       const grd   = ctx.createRadialGradient(rn.x, rn.y, 0, rn.x, rn.y, glowR)
       grd.addColorStop(0, `hsla(${H},85%,65%,${a * (hovered ? 0.9 : 0.5)})`)
@@ -1662,37 +1891,85 @@ export class DataOverlay {
       ctx.beginPath(); ctx.arc(rn.x, rn.y, glowR, 0, Math.PI * 2)
       ctx.fillStyle = grd; ctx.fill()
 
-      // Dashed ring (detector style)
       ctx.save()
-      ctx.setLineDash([3, 4])
-      ctx.strokeStyle = `hsla(${H},80%,65%,${a * (hovered ? 0.9 : 0.45)})`
-      ctx.lineWidth   = 0.8
-      ctx.beginPath(); ctx.arc(rn.x, rn.y, R + 4, 0, Math.PI * 2); ctx.stroke()
-      ctx.setLineDash([])
+      ctx.strokeStyle = `hsla(${H},80%,65%,${a * (hovered ? 0.9 : 0.5)})`
+
+      if (rn.recType === 'artist') {
+        // □ Square with corner marks — artist catalog
+        const half = R * 0.85
+        const bk   = half * 0.45  // bracket arm length
+        ctx.lineWidth = hovered ? 1.2 : 0.9
+        // Dashed square outline
+        ctx.setLineDash([2, 3])
+        ctx.strokeRect(rn.x - half, rn.y - half, half * 2, half * 2)
+        ctx.setLineDash([])
+        // Solid corner ticks
+        ctx.lineWidth = 1.2
+        for (const [sx, sy] of [[-1,-1],[1,-1],[-1,1],[1,1]]) {
+          const cx = rn.x + sx * half, cy = rn.y + sy * half
+          ctx.beginPath()
+          ctx.moveTo(cx, cy - sy * bk); ctx.lineTo(cx, cy)
+          ctx.lineTo(cx - sx * bk, cy); ctx.stroke()
+        }
+        // Core dot
+        ctx.beginPath(); ctx.arc(rn.x, rn.y, R * 0.38, 0, Math.PI * 2)
+        ctx.fillStyle = `hsla(${H},90%,70%,${a})`; ctx.fill()
+      } else {
+        // ◇ Diamond — lyric/emotion rec
+        const d = R * 1.1
+        ctx.lineWidth = hovered ? 1.2 : 0.9
+        ctx.setLineDash([2, 3])
+        ctx.beginPath()
+        ctx.moveTo(rn.x, rn.y - d); ctx.lineTo(rn.x + d, rn.y)
+        ctx.lineTo(rn.x, rn.y + d); ctx.lineTo(rn.x - d, rn.y)
+        ctx.closePath(); ctx.stroke()
+        ctx.setLineDash([])
+        // Core dot
+        ctx.beginPath(); ctx.arc(rn.x, rn.y, R * 0.38, 0, Math.PI * 2)
+        ctx.fillStyle = `hsla(${H},90%,70%,${a})`; ctx.fill()
+      }
       ctx.restore()
 
-      // Core dot
-      ctx.beginPath(); ctx.arc(rn.x, rn.y, R * 0.55, 0, Math.PI * 2)
-      ctx.fillStyle = `hsla(${H},90%,70%,${a})`
-      ctx.fill()
-
       // Label — track name + artist (always shown, monospace)
-      const fz   = hovered ? 9 : 8
+      const fz   = hovered ? 11 : 10
       const goRight = rn.x < w * 0.6
       const lx   = goRight ? rn.x + R + 8 : rn.x - R - 8
-      ctx.font      = `300 ${fz}px 'Courier New', monospace`
+      const aLabel = Math.max(0.45, a * (hovered ? 1.0 : 0.88))
+      ctx.font      = `400 ${fz}px 'Courier New', monospace`
       ctx.textAlign = goRight ? 'left' : 'right'
-      ctx.fillStyle = `hsla(${H},70%,72%,${a * (hovered ? 1.0 : 0.7)})`
+      ctx.fillStyle = `hsla(${H},80%,78%,${aLabel})`
       ctx.fillText(rn.label, lx, rn.y - 2)
-      ctx.fillStyle = `hsla(${H},50%,55%,${a * (hovered ? 0.7 : 0.4)})`
-      ctx.font      = `300 7px 'Courier New', monospace`
-      ctx.fillText(rn.artist, lx, rn.y + 9)
+      ctx.fillStyle = `hsla(${H},60%,62%,${Math.max(0.35, a * (hovered ? 0.85 : 0.65))})`
+      ctx.font      = `300 9px 'Courier New', monospace`
+      ctx.fillText(rn.artist, lx, rn.y + 11)
 
       // Click hint on hover
       if (hovered) {
-        ctx.font      = `300 6px 'Courier New', monospace`
-        ctx.fillStyle = `hsla(${H},60%,65%,${a * 0.55})`
-        ctx.fillText('▶ PLAY', lx, rn.y + 19)
+        ctx.font      = `300 8px 'Courier New', monospace`
+        ctx.fillStyle = `hsla(${H},70%,70%,${a * 0.7})`
+        ctx.fillText('▶ PLAY', lx, rn.y + 23)
+      }
+
+      // ── Keyword source connection lines (lyric recs only) ─────────────
+      if (rn.recType === 'lyric' && rn.sourceKeywords?.length) {
+        ctx.save()
+        ctx.setLineDash([2, 5])
+        ctx.lineWidth = 0.7
+        for (const kw of rn.sourceKeywords) {
+          const kn = this._nodes.find(n => n.word === kw)
+          if (!kn || kn.x == null) continue
+          const lineAlpha = a * 0.35
+          ctx.strokeStyle = `hsla(${H},70%,65%,${lineAlpha})`
+          ctx.beginPath()
+          ctx.moveTo(kn.x, kn.y)
+          ctx.lineTo(rn.x, rn.y)
+          ctx.stroke()
+          // Small dot at keyword node end
+          ctx.fillStyle = `hsla(${H},80%,70%,${lineAlpha * 1.5})`
+          ctx.beginPath(); ctx.arc(kn.x, kn.y, 2.5, 0, Math.PI * 2); ctx.fill()
+        }
+        ctx.setLineDash([])
+        ctx.restore()
       }
     }
 
@@ -1730,16 +2007,41 @@ export class DataOverlay {
     ]
     tlLines.forEach((ln, i) => ctx.fillText(ln, pad + 4, pad + 14 + i * 13))
 
-    // Bottom-left: frame + beat indicator
+    // Top-right: frame + beat indicator
     const beatIndicator = (bass > 0.5) ? '◆' : (bass > 0.25) ? '◇' : '·'
     ctx.fillStyle = `rgba(${cr},${cg},${cb},${hA})`
-    ctx.fillText(`FRM  ${frame}`, pad + 4, h - pad - 16)
-    ctx.fillText(`LVL  ${beatIndicator} ${Math.round(overall * 100).toString().padStart(3)}`, pad + 4, h - pad - 4)
+    ctx.textAlign = 'right'
+    ctx.fillText(`FRM  ${frame}`, w - pad - 4, pad + 14)
+    ctx.fillText(`LVL  ${beatIndicator} ${Math.round(overall * 100).toString().padStart(3)}`, w - pad - 4, pad + 27)
 
     // Bottom-center: track code
     ctx.textAlign = 'center'
     ctx.fillStyle = `rgba(${cr},${cg},${cb},${hA * 0.8})`
     ctx.fillText(code, cx, h - pad - 4)
+
+    // Top-center: current lyric line — crossfade between prev and current
+    const FADE_SPEED = 3.5  // alpha units per second
+    this._subtitleAlpha     = Math.min(1, (this._subtitleAlpha     || 0) + delta * FADE_SPEED)
+    this._subtitlePrevAlpha = Math.max(0, (this._subtitlePrevAlpha || 0) - delta * FADE_SPEED)
+    ctx.font = `300 15px 'Noto Sans KR', 'Space Mono', monospace`
+    ctx.textAlign   = 'center'
+    ctx.shadowColor = 'rgba(0,0,0,0.9)'
+    ctx.shadowBlur  = 10
+    if (this._subtitlePrev && this._subtitlePrevAlpha > 0) {
+      ctx.fillStyle = `rgba(${acr},${acg},${acb},${this._subtitlePrevAlpha * 0.75})`
+      ctx.fillText(this._subtitlePrev, cx, pad + 38)
+    }
+    if (this._subtitleCur) {
+      ctx.fillStyle = `rgba(${acr},${acg},${acb},${this._subtitleAlpha * (0.75 + this._beatFlash * 0.2)})`
+      ctx.fillText(this._subtitleCur, cx, pad + 40)
+    } else if (this._loadingHint) {
+      // Blinking dots while lyrics load
+      const blink = Math.floor(this.time * 2) % 3 + 1
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.35)`
+      ctx.font = `300 11px 'Courier New', monospace`
+      ctx.fillText('ACQUIRING LYRICS' + '.'.repeat(blink), cx, pad + 40)
+    }
+    ctx.shadowBlur = 0
 
     ctx.textAlign = 'left'
     ctx.shadowBlur = 0
